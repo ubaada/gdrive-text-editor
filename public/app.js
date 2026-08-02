@@ -355,15 +355,20 @@ async function getDraftRecords() {
   });
 }
 
-async function getDraftRecordById(draftId) {
+async function putDraftRecordIfNewer(record) {
   const database = await getDraftDatabase();
   return new Promise((resolve, reject) => {
-    const request = database
-      .transaction(DRAFT_STORE_NAME, "readonly")
-      .objectStore(DRAFT_STORE_NAME)
-      .get(draftId);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    const transaction = database.transaction(DRAFT_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(DRAFT_STORE_NAME);
+    const request = store.get(record.id);
+    request.onsuccess = () => {
+      if (!request.result || record.updatedAt > request.result.updatedAt) {
+        store.put(record);
+      }
+    };
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
   });
 }
 
@@ -466,10 +471,7 @@ async function importEmergencyDrafts() {
     first.updatedAt.localeCompare(second.updatedAt)
   );
   for (const record of records) {
-    const existing = await getDraftRecordById(record.id);
-    if (!existing || record.updatedAt > existing.updatedAt) {
-      await putDraftRecord(record);
-    }
+    await putDraftRecordIfNewer(record);
   }
   for (const key of storageKeys) {
     localStorage.removeItem(key);
