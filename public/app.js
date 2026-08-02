@@ -750,10 +750,7 @@ function closeTab(tabId) {
     } else {
       activeTabId = null;
       editor.setModel(null);
-      editor.updateOptions({ readOnly: true });
-      updateSaveButton();
-      renderTabs();
-      updateActiveFileDisplay();
+      createUntitledTab();
     }
   } else {
     renderTabs();
@@ -838,6 +835,7 @@ require(["vs/editor/editor.main"], () => {
   editor.onDidChangeCursorPosition(updateEditorStats);
   newButton.disabled = false;
   openButton.disabled = false;
+  createUntitledTab();
   showRecoveryDrafts();
 });
 
