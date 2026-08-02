@@ -971,32 +971,59 @@ async function openDriveFile(fileId) {
   }
 
   try {
-    setStatus("LOADING");
-    const metadataResponse = await driveFetch(
-      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
-        fileId
-      )}?fields=id,name,mimeType,parents,version,modifiedTime`
-    );
-    const file = await metadataResponse.json();
+    let stableFile = null;
+    let stableContent = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      setStatus(attempt ? "FILE CHANGED | RETRYING LOAD" : "LOADING");
+      const metadataResponse = await driveFetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+          fileId
+        )}?fields=id,name,mimeType,parents,version,modifiedTime`
+      );
+      const file = await metadataResponse.json();
 
-    if (file.mimeType.startsWith("application/vnd.google-apps.")) {
-      throw new Error("Google workspace files are not plain text.");
+      if (file.mimeType.startsWith("application/vnd.google-apps.")) {
+        throw new Error("Google workspace files are not plain text.");
+      }
+      if (!isSupportedTextMimeType(file.mimeType)) {
+        throw new Error(`UNSUPPORTED FILE TYPE: ${file.mimeType}`);
+      }
+
+      const contentResponse = await driveFetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+          file.id
+        )}?alt=media`
+      );
+      const decoded = decodeUtf8Text(
+        new Uint8Array(await contentResponse.arrayBuffer())
+      );
+      const confirmationResponse = await driveFetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+          file.id
+        )}?fields=version,modifiedTime`
+      );
+      const confirmation = await confirmationResponse.json();
+
+      if (confirmation.version === file.version) {
+        stableFile = {
+          ...file,
+          ...confirmation,
+          hasUtf8Bom: decoded.hasUtf8Bom,
+        };
+        stableContent = decoded.content;
+        break;
+      }
     }
-    if (!isSupportedTextMimeType(file.mimeType)) {
-      throw new Error(`UNSUPPORTED FILE TYPE: ${file.mimeType}`);
+
+    if (!stableFile) {
+      throw new Error("FILE KEPT CHANGING IN DRIVE: TRY OPENING IT AGAIN");
     }
 
-    const contentResponse = await driveFetch(
-      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
-        file.id
-      )}?alt=media`
-    );
-    const decoded = decodeUtf8Text(
-      new Uint8Array(await contentResponse.arrayBuffer())
-    );
-    file.hasUtf8Bom = decoded.hasUtf8Bom;
-
-    createTab({ name: file.name, content: decoded.content, file });
+    createTab({
+      name: stableFile.name,
+      content: stableContent,
+      file: stableFile,
+    });
     setStatus("LOADED");
   } catch (error) {
     console.error(error);
