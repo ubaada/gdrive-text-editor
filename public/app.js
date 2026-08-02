@@ -619,7 +619,7 @@ async function openDriveFile(fileId) {
     const metadataResponse = await driveFetch(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
         fileId
-      )}?fields=id,name,mimeType,parents`
+      )}?fields=id,name,mimeType,parents,version,modifiedTime`
     );
     const file = await metadataResponse.json();
 
@@ -661,11 +661,22 @@ async function saveFile() {
   try {
     tab.saving = true;
     updateSaveButton();
+    setStatus("CHECKING DRIVE VERSION");
+    const metadataResponse = await driveFetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        tab.file.id
+      )}?fields=version,modifiedTime`
+    );
+    const remoteFile = await metadataResponse.json();
+    if (tab.file.version && remoteFile.version !== tab.file.version) {
+      throw new Error("SAVE BLOCKED: FILE CHANGED IN DRIVE");
+    }
+
     setStatus("SAVING");
-    await driveFetch(
+    const response = await driveFetch(
       `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
         tab.file.id
-      )}?uploadType=media`,
+      )}?uploadType=media&fields=id,name,mimeType,parents,version,modifiedTime`,
       {
         method: "PATCH",
         headers: {
@@ -675,6 +686,7 @@ async function saveFile() {
       }
     );
 
+    tab.file = { ...tab.file, ...(await response.json()) };
     tab.dirty = tab.model.getValue() !== content;
     renderTabs();
     updateActiveFileDisplay();
@@ -730,7 +742,7 @@ async function createDriveFile(folderId, tabId) {
     ].join("\r\n");
 
     const response = await driveFetch(
-      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,parents",
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,parents,version,modifiedTime",
       {
         method: "POST",
         headers: {
