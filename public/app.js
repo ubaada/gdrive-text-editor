@@ -817,6 +817,7 @@ window.addEventListener("load", () => {
 window.addEventListener("beforeunload", (event) => {
   if (tabs.some((tab) => tab.dirty)) {
     event.preventDefault();
+    event.returnValue = true;
   }
 });
 
