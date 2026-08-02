@@ -2,45 +2,162 @@ html,
 body {
   height: 100%;
   margin: 0;
-  font-family: system-ui, sans-serif;
+  font-family: "Courier New", Courier, monospace;
 }
 
 body {
+  --ink: #8cff66;
+  --dim: #397c2d;
+  --panel: #071007;
   display: flex;
   flex-direction: column;
-  background: #1e1e1e;
-  color: #ddd;
+  overflow: hidden;
+  background: #020602;
+  color: var(--ink);
+  font-size: 14px;
 }
 
 header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 48px;
-  padding: 0 12px;
-  border-bottom: 1px solid #444;
+  gap: 0;
+  min-height: 42px;
+  border-bottom: 1px solid var(--ink);
+  background: var(--panel);
+}
+
+.app-title {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border-right: 1px solid var(--ink);
+  font-weight: 700;
+  letter-spacing: 0.12em;
 }
 
 button {
-  padding: 7px 12px;
+  border: 0;
+  border-right: 1px solid var(--dim);
+  border-radius: 0;
+  padding: 0 14px;
+  align-self: stretch;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
   cursor: pointer;
+}
+
+button:hover,
+button:focus-visible {
+  outline: 0;
+  background: var(--ink);
+  color: #020602;
 }
 
 button:disabled {
   cursor: default;
-  opacity: 0.5;
+  color: var(--dim);
+  background: transparent;
 }
 
-#filename {
-  font-weight: 600;
+#tabs {
+  display: flex;
+  min-height: 34px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid var(--ink);
+  background: #020602;
+}
+
+.tab {
+  display: flex;
+  flex: 0 0 auto;
+  align-self: stretch;
+  align-items: stretch;
+  min-width: 150px;
+  max-width: 260px;
+  border-right: 1px solid var(--dim);
+  color: var(--dim);
+}
+
+.tab[aria-selected="true"] {
+  background: var(--ink);
+  color: #020602;
+}
+
+.tab-select {
+  flex: 1;
+  overflow: hidden;
+  padding: 0 10px;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  width: 34px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid currentColor;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tab-select:hover,
+.tab-select:focus-visible,
+.tab-close:hover,
+.tab-close:focus-visible {
+  background: var(--ink);
+  color: #020602;
+}
+
+.tab[aria-selected="true"] .tab-select:hover,
+.tab[aria-selected="true"] .tab-close:hover {
+  background: #020602;
+  color: var(--ink);
 }
 
 #status {
   margin-left: auto;
-  color: #aaa;
+  padding-left: 12px;
 }
 
 #editor {
   flex: 1;
   min-height: 0;
+}
+
+footer {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 9px;
+  border-top: 1px solid var(--ink);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+@media (max-width: 600px) {
+  body {
+    font-size: 12px;
+  }
+
+  .app-title {
+    padding: 0 9px;
+  }
+
+  header button {
+    padding: 0 8px;
+  }
+
+  .tab {
+    min-width: 125px;
+  }
 }

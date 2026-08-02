@@ -1,16 +1,22 @@
 const { clientId, apiKey, appId } = window.APP_CONFIG;
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
 let tokenClient;
 let accessToken = null;
 let pickerReady = false;
+let pendingPickerRequest = null;
 let editor;
-let currentFile = null;
+let tabs = [];
+let activeTabId = null;
+let nextTabId = 1;
+let nextUntitledNumber = 1;
 
 const newButton = document.getElementById("newButton");
 const openButton = document.getElementById("openButton");
 const saveButton = document.getElementById("saveButton");
+const tabsElement = document.getElementById("tabs");
 const filename = document.getElementById("filename");
 const status = document.getElementById("status");
 
@@ -18,53 +24,12 @@ function setStatus(message) {
   status.textContent = message;
 }
 
-async function createFile() {
-  const name = prompt("Filename, including extension:");
-
-  if (!name?.trim()) {
-    return;
-  }
-
-  try {
-    setStatus("Creating…");
-
-    const response = await driveFetch(
-      "https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: name.trim(),
-          mimeType: "text/plain",
-        }),
-      }
-    );
-
-    currentFile = await response.json();
-
-    editor.setValue("");
-    monaco.editor.setModelLanguage(
-      editor.getModel(),
-      languageFromFilename(currentFile.name)
-    );
-
-    filename.textContent = currentFile.name;
-    saveButton.disabled = false;
-    setStatus("Created");
-  } catch (error) {
-    console.error(error);
-    setStatus(error.message);
-  }
+function getActiveTab() {
+  return tabs.find((tab) => tab.id === activeTabId) || null;
 }
-
-newButton.addEventListener("click", createFile);
-
 
 function languageFromFilename(name) {
   const extension = name.split(".").pop()?.toLowerCase();
-
   const languages = {
     js: "javascript",
     ts: "typescript",
@@ -85,6 +50,119 @@ function languageFromFilename(name) {
   return languages[extension] || "plaintext";
 }
 
+function createTab({ name, content = "", file = null, dirty = false }) {
+  const tab = {
+    id: nextTabId++,
+    name,
+    file,
+    dirty,
+    model: monaco.editor.createModel(content, languageFromFilename(name)),
+  };
+
+  tab.model.onDidChangeContent(() => {
+    if (tab.dirty) {
+      return;
+    }
+
+    tab.dirty = true;
+    renderTabs();
+    updateActiveFileDisplay();
+  });
+
+  tabs.push(tab);
+  activateTab(tab.id);
+  return tab;
+}
+
+function createUntitledTab() {
+  createTab({
+    name: `Untitled ${nextUntitledNumber++}`,
+    dirty: true,
+  });
+  setStatus("NEW BUFFER");
+}
+
+function activateTab(tabId) {
+  const tab = tabs.find((candidate) => candidate.id === tabId);
+  if (!tab) {
+    return;
+  }
+
+  activeTabId = tab.id;
+  editor.setModel(tab.model);
+  editor.updateOptions({ readOnly: false });
+  saveButton.disabled = false;
+  renderTabs();
+  updateActiveFileDisplay();
+  editor.focus();
+}
+
+function closeTab(tabId) {
+  const index = tabs.findIndex((tab) => tab.id === tabId);
+  if (index === -1) {
+    return;
+  }
+
+  const tab = tabs[index];
+  if (tab.dirty && !confirm(`Close ${tab.name} without saving?`)) {
+    return;
+  }
+
+  tabs.splice(index, 1);
+  tab.model.dispose();
+
+  if (activeTabId === tabId) {
+    const replacement = tabs[index] || tabs[index - 1];
+    if (replacement) {
+      activateTab(replacement.id);
+    } else {
+      activeTabId = null;
+      editor.setModel(null);
+      editor.updateOptions({ readOnly: true });
+      saveButton.disabled = true;
+      renderTabs();
+      updateActiveFileDisplay();
+    }
+  } else {
+    renderTabs();
+  }
+}
+
+function renderTabs() {
+  tabsElement.replaceChildren();
+
+  for (const tab of tabs) {
+    const tabElement = document.createElement("div");
+    tabElement.className = "tab";
+    tabElement.setAttribute("role", "tab");
+    tabElement.setAttribute("aria-selected", String(tab.id === activeTabId));
+
+    const selectButton = document.createElement("button");
+    selectButton.className = "tab-select";
+    selectButton.type = "button";
+    selectButton.title = tab.name;
+    selectButton.textContent = tab.name;
+    selectButton.addEventListener("click", () => activateTab(tab.id));
+
+    const closeButton = document.createElement("button");
+    closeButton.className = "tab-close";
+    closeButton.type = "button";
+    closeButton.setAttribute("aria-label", `Close ${tab.name}`);
+    closeButton.textContent = tab.dirty ? "●" : "X";
+    closeButton.addEventListener("click", () => closeTab(tab.id));
+
+    tabElement.append(selectButton, closeButton);
+    tabsElement.append(tabElement);
+  }
+}
+
+function updateActiveFileDisplay() {
+  const tab = getActiveTab();
+  filename.textContent = tab
+    ? `${tab.dirty ? "MODIFIED | " : ""}${tab.name}`
+    : "NO FILE";
+}
+
 require.config({
   paths: {
     vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs",
@@ -92,14 +170,39 @@ require.config({
 });
 
 require(["vs/editor/editor.main"], () => {
+  monaco.editor.defineTheme("terminal-monochrome", {
+    base: "vs-dark",
+    inherit: false,
+    rules: [{ token: "", foreground: "8CFF66" }],
+    colors: {
+      "editor.background": "#020602",
+      "editor.foreground": "#8CFF66",
+      "editorCursor.foreground": "#8CFF66",
+      "editorLineNumber.foreground": "#397C2D",
+      "editorLineNumber.activeForeground": "#8CFF66",
+      "editor.selectionBackground": "#285C22",
+      "editor.inactiveSelectionBackground": "#173A16",
+      "editor.lineHighlightBackground": "#071007",
+      "editorWhitespace.foreground": "#397C2D",
+      "editorIndentGuide.background1": "#173A16",
+      "editorIndentGuide.activeBackground1": "#397C2D",
+    },
+  });
+
   editor = monaco.editor.create(document.getElementById("editor"), {
-    value: "",
-    language: "plaintext",
-    theme: "vs-dark",
+    model: null,
+    theme: "terminal-monochrome",
     automaticLayout: true,
     minimap: { enabled: false },
     wordWrap: "on",
+    fontFamily: '"Courier New", Courier, monospace',
+    fontSize: 14,
+    lineNumbersMinChars: 3,
+    padding: { top: 8 },
+    readOnly: true,
   });
+  newButton.disabled = false;
+  openButton.disabled = false;
 });
 
 window.addEventListener("load", () => {
@@ -114,90 +217,128 @@ window.addEventListener("load", () => {
     scope: DRIVE_SCOPE,
     callback: (response) => {
       if (response.error) {
-        setStatus(`Authorization failed: ${response.error}`);
+        setStatus(`AUTH FAILED: ${response.error}`);
         return;
       }
 
       accessToken = response.access_token;
-      showPicker();
+      const request = pendingPickerRequest;
+      pendingPickerRequest = null;
+      if (request) {
+        showPicker(request.mode, request.tabId);
+      }
     },
   });
 });
 
-openButton.addEventListener("click", () => {
+window.addEventListener("beforeunload", (event) => {
+  if (tabs.some((tab) => tab.dirty)) {
+    event.preventDefault();
+  }
+});
+
+newButton.addEventListener("click", createUntitledTab);
+openButton.addEventListener("click", () => requestPicker("file"));
+saveButton.addEventListener("click", saveFile);
+
+document.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey || event.metaKey)) {
+    return;
+  }
+
+  const key = event.key.toLowerCase();
+  if (key === "s") {
+    event.preventDefault();
+    saveFile();
+  } else if (key === "n") {
+    event.preventDefault();
+    createUntitledTab();
+  } else if (key === "o") {
+    event.preventDefault();
+    requestPicker("file");
+  }
+});
+
+function requestPicker(mode, tabId = null) {
   if (!pickerReady) {
-    setStatus("Google Picker is still loading.");
+    setStatus("PICKER LOADING");
     return;
   }
 
   if (!accessToken) {
+    pendingPickerRequest = { mode, tabId };
     tokenClient.requestAccessToken({ prompt: "consent" });
     return;
   }
 
-  showPicker();
-});
+  showPicker(mode, tabId);
+}
 
-saveButton.addEventListener("click", saveFile);
+function showPicker(mode, tabId) {
+  const view = new google.picker.DocsView()
+    .setMode(google.picker.DocsViewMode.LIST)
+    .setIncludeFolders(mode === "folder")
+    .setSelectFolderEnabled(mode === "folder");
 
-function showPicker() {
-const view = new google.picker.DocsView()
-  .setMode(google.picker.DocsViewMode.LIST)
-  .setIncludeFolders(false)
-  .setSelectFolderEnabled(false);
+  if (mode === "folder") {
+    view.setMimeTypes(FOLDER_MIME_TYPE);
+  }
 
   const picker = new google.picker.PickerBuilder()
     .setDeveloperKey(apiKey)
     .setAppId(appId)
     .setOAuthToken(accessToken)
     .addView(view)
-    .setCallback(handlePickerResult)
+    .setTitle(mode === "folder" ? "Choose a folder for this file" : "Open from Drive")
+    .setCallback((data) => handlePickerResult(data, mode, tabId))
     .build();
 
   picker.setVisible(true);
 }
 
-async function handlePickerResult(data) {
+async function handlePickerResult(data, mode, tabId) {
   if (data.action !== google.picker.Action.PICKED) {
     return;
   }
 
   const selected = data.docs[0];
+  if (mode === "folder") {
+    await createDriveFile(selected.id, tabId);
+  } else {
+    await openDriveFile(selected.id);
+  }
+}
+
+async function openDriveFile(fileId) {
+  const existingTab = tabs.find((tab) => tab.file?.id === fileId);
+  if (existingTab) {
+    activateTab(existingTab.id);
+    setStatus("ALREADY OPEN");
+    return;
+  }
 
   try {
-    setStatus("Loading…");
-
+    setStatus("LOADING");
     const metadataResponse = await driveFetch(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
-        selected.id
-      )}?fields=id,name,mimeType`
+        fileId
+      )}?fields=id,name,mimeType,parents`
     );
+    const file = await metadataResponse.json();
 
-    currentFile = await metadataResponse.json();
-
-    if (currentFile.mimeType.startsWith("application/vnd.google-apps.")) {
-      throw new Error(
-        "Google Docs, Sheets and Slides are not plain-text Drive files."
-      );
+    if (file.mimeType.startsWith("application/vnd.google-apps.")) {
+      throw new Error("Google workspace files are not plain text.");
     }
 
     const contentResponse = await driveFetch(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
-        currentFile.id
+        file.id
       )}?alt=media`
     );
-
     const content = await contentResponse.text();
 
-    editor.setValue(content);
-    monaco.editor.setModelLanguage(
-      editor.getModel(),
-      languageFromFilename(currentFile.name)
-    );
-
-    filename.textContent = currentFile.name;
-    saveButton.disabled = false;
-    setStatus("Loaded");
+    createTab({ name: file.name, content, file });
+    setStatus("LOADED");
   } catch (error) {
     console.error(error);
     setStatus(error.message);
@@ -205,28 +346,96 @@ async function handlePickerResult(data) {
 }
 
 async function saveFile() {
-  if (!currentFile) {
+  const tab = getActiveTab();
+  if (!tab) {
+    return;
+  }
+
+  if (!tab.file) {
+    requestPicker("folder", tab.id);
     return;
   }
 
   try {
     saveButton.disabled = true;
-    setStatus("Saving…");
-
+    setStatus("SAVING");
     await driveFetch(
       `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
-        currentFile.id
+        tab.file.id
       )}?uploadType=media`,
       {
         method: "PATCH",
         headers: {
-          "Content-Type": currentFile.mimeType || "text/plain; charset=utf-8",
+          "Content-Type": tab.file.mimeType || "text/plain; charset=utf-8",
         },
-        body: editor.getValue(),
+        body: tab.model.getValue(),
       }
     );
 
-    setStatus("Saved");
+    tab.dirty = false;
+    renderTabs();
+    updateActiveFileDisplay();
+    setStatus("SAVED");
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message);
+  } finally {
+    saveButton.disabled = false;
+  }
+}
+
+async function createDriveFile(folderId, tabId) {
+  const tab = tabs.find((candidate) => candidate.id === tabId);
+  if (!tab || tab.file) {
+    return;
+  }
+
+  const name = prompt("Filename, including extension:", tab.name);
+  if (!name?.trim()) {
+    setStatus("SAVE CANCELLED");
+    return;
+  }
+
+  try {
+    saveButton.disabled = true;
+    setStatus("CREATING");
+    const boundary = `drive_editor_${Date.now()}`;
+    const metadata = {
+      name: name.trim(),
+      mimeType: "text/plain",
+      parents: [folderId],
+    };
+    const body = [
+      `--${boundary}`,
+      "Content-Type: application/json; charset=UTF-8",
+      "",
+      JSON.stringify(metadata),
+      `--${boundary}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "",
+      tab.model.getValue(),
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+
+    const response = await driveFetch(
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,parents",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": `multipart/related; boundary=${boundary}`,
+        },
+        body,
+      }
+    );
+
+    tab.file = await response.json();
+    tab.name = tab.file.name;
+    tab.dirty = false;
+    monaco.editor.setModelLanguage(tab.model, languageFromFilename(tab.name));
+    renderTabs();
+    updateActiveFileDisplay();
+    setStatus("SAVED");
   } catch (error) {
     console.error(error);
     setStatus(error.message);
@@ -246,7 +455,7 @@ async function driveFetch(url, options = {}) {
 
   if (response.status === 401) {
     accessToken = null;
-    throw new Error("Google authorization expired. Open the file again.");
+    throw new Error("Google authorization expired. Try again.");
   }
 
   if (!response.ok) {
