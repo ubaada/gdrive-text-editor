@@ -1,4 +1,4 @@
-const { clientId, apiKey, appId } = window.APP_CONFIG;
+const { clientId } = window.APP_CONFIG;
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
@@ -8,6 +8,18 @@ const DRAFT_DATABASE_NAME = "drive-edit-recovery";
 const DRAFT_STORE_NAME = "drafts";
 const DRAFT_SAVE_DELAY = 500;
 const EMERGENCY_DRAFT_STORAGE_PREFIX = "drive-edit-emergency-drafts:";
+const LOADING_FRAMES = [
+  "⠋",
+  "⠙",
+  "⠹",
+  "⠸",
+  "⠼",
+  "⠴",
+  "⠦",
+  "⠧",
+  "⠇",
+  "⠏",
+];
 const TEXT_APPLICATION_MIME_TYPES = new Set([
   "application/ecmascript",
   "application/javascript",
@@ -125,12 +137,37 @@ const DEFAULT_THEME_PREFERENCES = {
   followSystem: false,
   darkTheme: "carbon-white",
   lightTheme: "paper-ink",
+  uiFont: "gt-america-mono",
+  uiFontSize: 14,
+  editorFont: "gt-america-mono",
+  editorFontSize: 14,
 };
+const FONT_OPTIONS = [
+  {
+    id: "gt-america-mono",
+    name: "GT America Mono",
+    stack:
+      '"GT America Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+  },
+  {
+    id: "system-mono",
+    name: "System Mono",
+    stack: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  },
+  {
+    id: "courier-new",
+    name: "Courier New",
+    stack: '"Courier New", Courier, monospace',
+  },
+  { id: "consolas", name: "Consolas", stack: "Consolas, monospace" },
+  { id: "monaco", name: "Monaco", stack: "Monaco, monospace" },
+];
+const UI_FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18];
+const EDITOR_FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28];
 
 let tokenClient;
 let accessToken = null;
-let pickerReady = false;
-let pendingAuthorizationRequest = null;
+let pendingAuthorizationRequests = [];
 let editor;
 let tabs = [];
 let activeTabId = null;
@@ -138,6 +175,11 @@ let nextTabId = 1;
 let nextUntitledNumber = 1;
 let draftDatabasePromise = null;
 const openingDriveFileIds = new Set();
+let loadingFrameIndex = 0;
+let loadingAnimationTimer = null;
+let explorerCreateOperation = null;
+let editorReady = false;
+let driveClientReady = false;
 const explorerRoot = {
   id: EXPLORER_ROOT_ID,
   name: "MY DRIVE",
@@ -150,8 +192,7 @@ const explorerRoot = {
 let selectedExplorerFolderId = EXPLORER_ROOT_ID;
 
 const explorerToggle = document.getElementById("explorerToggle");
-const newButton = document.getElementById("newButton");
-const openButton = document.getElementById("openButton");
+const newTabButton = document.getElementById("newTabButton");
 const saveButton = document.getElementById("saveButton");
 const settingsButton = document.getElementById("settingsButton");
 const explorerNewFileButton = document.getElementById(
@@ -164,6 +205,10 @@ const explorerRefreshButton = document.getElementById(
   "explorerRefreshButton"
 );
 const explorerTree = document.getElementById("explorerTree");
+const editorElement = document.getElementById("editor");
+const editorState = document.getElementById("editorState");
+const editorStateSymbol = document.getElementById("editorStateSymbol");
+const editorStateMessage = document.getElementById("editorStateMessage");
 const tabsElement = document.getElementById("tabs");
 const filename = document.getElementById("filename");
 const status = document.getElementById("status");
@@ -178,6 +223,10 @@ const darkModeToggle = document.getElementById("darkModeToggle");
 const followSystemToggle = document.getElementById("followSystemToggle");
 const darkThemeSelect = document.getElementById("darkThemeSelect");
 const lightThemeSelect = document.getElementById("lightThemeSelect");
+const uiFontSelect = document.getElementById("uiFontSelect");
+const uiFontSizeSelect = document.getElementById("uiFontSizeSelect");
+const editorFontSelect = document.getElementById("editorFontSelect");
+const editorFontSizeSelect = document.getElementById("editorFontSizeSelect");
 const textEncoder = new TextEncoder();
 const emergencyDraftStorageKey = `${EMERGENCY_DRAFT_STORAGE_PREFIX}${crypto.randomUUID()}`;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -198,6 +247,20 @@ function loadThemePreferences() {
       lightTheme: THEMES.light.some((theme) => theme.id === stored?.lightTheme)
         ? stored.lightTheme
         : DEFAULT_THEME_PREFERENCES.lightTheme,
+      uiFont: FONT_OPTIONS.some((font) => font.id === stored?.uiFont)
+        ? stored.uiFont
+        : DEFAULT_THEME_PREFERENCES.uiFont,
+      uiFontSize: UI_FONT_SIZES.includes(Number(stored?.uiFontSize))
+        ? Number(stored.uiFontSize)
+        : DEFAULT_THEME_PREFERENCES.uiFontSize,
+      editorFont: FONT_OPTIONS.some((font) => font.id === stored?.editorFont)
+        ? stored.editorFont
+        : DEFAULT_THEME_PREFERENCES.editorFont,
+      editorFontSize: EDITOR_FONT_SIZES.includes(
+        Number(stored?.editorFontSize)
+      )
+        ? Number(stored.editorFontSize)
+        : DEFAULT_THEME_PREFERENCES.editorFontSize,
     };
   } catch {
     return { ...DEFAULT_THEME_PREFERENCES };
@@ -211,6 +274,28 @@ function populateThemeSelect(select, themes) {
     option.textContent = theme.name;
     select.append(option);
   }
+}
+
+function populateFontSelect(select) {
+  for (const font of FONT_OPTIONS) {
+    const option = document.createElement("option");
+    option.value = font.id;
+    option.textContent = font.name;
+    select.append(option);
+  }
+}
+
+function populateFontSizeSelect(select, sizes) {
+  for (const size of sizes) {
+    const option = document.createElement("option");
+    option.value = String(size);
+    option.textContent = `${size} PX`;
+    select.append(option);
+  }
+}
+
+function getFont(fontId) {
+  return FONT_OPTIONS.find((font) => font.id === fontId) || FONT_OPTIONS[0];
 }
 
 function getActiveTheme() {
@@ -270,12 +355,37 @@ function applyTheme() {
   monaco.editor.setTheme("drive-edit-theme");
 }
 
+function applyFontPreferences() {
+  const uiFont = getFont(themePreferences.uiFont);
+  const editorFont = getFont(themePreferences.editorFont);
+  document.body.style.setProperty("--ui-font", uiFont.stack);
+  document.body.style.setProperty(
+    "--ui-font-size",
+    `${themePreferences.uiFontSize}px`
+  );
+  document.body.style.setProperty(
+    "--ui-small-font-size",
+    `${Math.max(10, themePreferences.uiFontSize - 2)}px`
+  );
+
+  if (editor) {
+    editor.updateOptions({
+      fontFamily: editorFont.stack,
+      fontSize: themePreferences.editorFontSize,
+    });
+  }
+}
+
 function updateThemeControls() {
   darkModeToggle.checked = themePreferences.mode === "dark";
   darkModeToggle.disabled = themePreferences.followSystem;
   followSystemToggle.checked = themePreferences.followSystem;
   darkThemeSelect.value = themePreferences.darkTheme;
   lightThemeSelect.value = themePreferences.lightTheme;
+  uiFontSelect.value = themePreferences.uiFont;
+  uiFontSizeSelect.value = String(themePreferences.uiFontSize);
+  editorFontSelect.value = themePreferences.editorFont;
+  editorFontSizeSelect.value = String(themePreferences.editorFontSize);
   darkThemeSelect.disabled =
     !themePreferences.followSystem && themePreferences.mode !== "dark";
   lightThemeSelect.disabled =
@@ -291,12 +401,18 @@ function saveThemePreferences() {
 
   updateThemeControls();
   applyTheme();
+  applyFontPreferences();
 }
 
 populateThemeSelect(darkThemeSelect, THEMES.dark);
 populateThemeSelect(lightThemeSelect, THEMES.light);
+populateFontSelect(uiFontSelect);
+populateFontSelect(editorFontSelect);
+populateFontSizeSelect(uiFontSizeSelect, UI_FONT_SIZES);
+populateFontSizeSelect(editorFontSizeSelect, EDITOR_FONT_SIZES);
 updateThemeControls();
 applyTheme();
+applyFontPreferences();
 
 settingsButton.addEventListener("click", () => settingsDialog.showModal());
 closeSettingsButton.addEventListener("click", () => settingsDialog.close());
@@ -318,6 +434,26 @@ darkThemeSelect.addEventListener("change", () => {
 
 lightThemeSelect.addEventListener("change", () => {
   themePreferences.lightTheme = lightThemeSelect.value;
+  saveThemePreferences();
+});
+
+uiFontSelect.addEventListener("change", () => {
+  themePreferences.uiFont = uiFontSelect.value;
+  saveThemePreferences();
+});
+
+uiFontSizeSelect.addEventListener("change", () => {
+  themePreferences.uiFontSize = Number(uiFontSizeSelect.value);
+  saveThemePreferences();
+});
+
+editorFontSelect.addEventListener("change", () => {
+  themePreferences.editorFont = editorFontSelect.value;
+  saveThemePreferences();
+});
+
+editorFontSizeSelect.addEventListener("change", () => {
+  themePreferences.editorFontSize = Number(editorFontSizeSelect.value);
   saveThemePreferences();
 });
 
@@ -449,7 +585,6 @@ function getDraftRecord(tab) {
     name: tab.name,
     content: tab.model.getValue(),
     file: tab.file,
-    parentFolderId: tab.parentFolderId,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -536,7 +671,6 @@ function renderRecoveryDrafts(drafts) {
         content: draft.content,
         file: draft.file,
         dirty: true,
-        parentFolderId: draft.parentFolderId,
       });
       scheduleDraftSave(restoredTab, true);
       queueDraftOperation(restoredTab, () => deleteDraftRecord(draft.id));
@@ -597,7 +731,8 @@ function getActiveTab() {
 
 function updateSaveButton() {
   const tab = getActiveTab();
-  saveButton.disabled = !tab || tab.saving || tab.savePending;
+  saveButton.disabled =
+    !tab || tab.saving || tab.savePending || tab.loading || tab.loadError;
 }
 
 function languageFromFilename(name) {
@@ -692,7 +827,7 @@ function createTab({
   file = null,
   dirty = false,
   draftId = crypto.randomUUID(),
-  parentFolderId = null,
+  loading = false,
 }) {
   const tab = {
     id: nextTabId++,
@@ -701,7 +836,9 @@ function createTab({
     dirty,
     saving: false,
     savePending: false,
-    parentFolderId,
+    loading,
+    loadError: null,
+    suppressDirtyTracking: false,
     draftId,
     draftTimer: null,
     draftWritePromise: Promise.resolve(),
@@ -711,6 +848,10 @@ function createTab({
   tab.model.onDidChangeContent(() => {
     if (tab.id === activeTabId) {
       updateEditorStats();
+    }
+
+    if (tab.suppressDirtyTracking) {
+      return;
     }
 
     if (!tab.dirty) {
@@ -727,11 +868,10 @@ function createTab({
   return tab;
 }
 
-function createUntitledTab(parentFolderId = null) {
+function createUntitledTab() {
   createTab({
     name: `Untitled ${nextUntitledNumber++}`,
     dirty: true,
-    parentFolderId,
   });
   setStatus("NEW BUFFER");
 }
@@ -748,7 +888,10 @@ function activateTab(tabId) {
   updateSaveButton();
   renderTabs();
   updateActiveFileDisplay();
-  editor.focus();
+  updateEditorState();
+  if (!tab.loading && !tab.loadError) {
+    editor.focus();
+  }
 }
 
 function closeTab(tabId) {
@@ -758,8 +901,8 @@ function closeTab(tabId) {
   }
 
   const tab = tabs[index];
-  if (tab.saving) {
-    setStatus("SAVE IN PROGRESS");
+  if (tab.saving || tab.savePending || tab.loading) {
+    setStatus(tab.loading ? "FILE LOAD IN PROGRESS" : "SAVE IN PROGRESS");
     return;
   }
 
@@ -821,6 +964,23 @@ function updateActiveFileDisplay() {
   updateEditorStats();
 }
 
+function updateEditorState() {
+  const tab = getActiveTab();
+  const showState = Boolean(tab?.loading || tab?.loadError);
+  editorElement.style.visibility = showState ? "hidden" : "visible";
+  editorElement.setAttribute("aria-busy", String(Boolean(tab?.loading)));
+  editorState.hidden = !showState;
+
+  if (tab?.loading) {
+    editorStateSymbol.hidden = false;
+    editorStateSymbol.textContent = LOADING_FRAMES[loadingFrameIndex];
+    editorStateMessage.textContent = "LOADING FILE";
+  } else if (tab?.loadError) {
+    editorStateSymbol.hidden = true;
+    editorStateMessage.textContent = `LOAD FAILED: ${tab.loadError}`;
+  }
+}
+
 function updateEditorStats() {
   const tab = getActiveTab();
   if (!tab) {
@@ -857,6 +1017,25 @@ function findExplorerFolder(folderId, folder = explorerRoot) {
   return null;
 }
 
+function findExplorerFolderPath(folderId, folder = explorerRoot, path = []) {
+  const nextPath = [...path, folder];
+  if (folder.id === folderId) {
+    return nextPath;
+  }
+
+  for (const child of folder.children) {
+    if (child.mimeType !== FOLDER_MIME_TYPE) {
+      continue;
+    }
+    const match = findExplorerFolderPath(folderId, child, nextPath);
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
 function isExplorerFileSupported(file) {
   return (
     !file.mimeType.startsWith("application/vnd.google-apps.") &&
@@ -869,13 +1048,19 @@ function createExplorerRow(item, depth) {
   const row = document.createElement("button");
   row.type = "button";
   row.className = "explorer-row";
+  row.dataset.itemId = item.id;
   row.style.paddingLeft = `${8 + depth * 16}px`;
   row.setAttribute("role", "treeitem");
   row.title = item.name;
 
   const marker = document.createElement("span");
   marker.className = "explorer-marker";
-  marker.textContent = isFolder ? (item.expanded ? "[-]" : "[+]") : "[ ]";
+  marker.setAttribute("aria-hidden", "true");
+  if (isFolder) {
+    marker.textContent = item.expanded ? "[-]" : "[+]";
+  } else {
+    marker.textContent = "[ ]";
+  }
   const name = document.createElement("span");
   name.className = "explorer-name";
   name.textContent = item.name;
@@ -889,9 +1074,7 @@ function createExplorerRow(item, depth) {
     const supported = isExplorerFileSupported(item);
     row.classList.toggle("unsupported", !supported);
     if (supported) {
-      row.addEventListener("click", () =>
-        requestDriveAccess(() => openDriveFile(item.id))
-      );
+      row.addEventListener("click", () => openDriveFile(item.id, item));
     } else {
       row.title = `${item.name} is not a supported UTF-8 text file`;
       row.setAttribute("aria-disabled", "true");
@@ -910,11 +1093,21 @@ function appendExplorerFolder(folder, depth) {
     return;
   }
 
+  if (explorerCreateOperation?.parentId === folder.id) {
+    explorerTree.append(createExplorerInputRow(depth + 1));
+  }
+
   if (folder.loading) {
     const loading = document.createElement("div");
     loading.className = "explorer-message";
+    loading.setAttribute("role", "treeitem");
+    loading.setAttribute("aria-live", "polite");
     loading.style.paddingLeft = `${24 + depth * 16}px`;
-    loading.textContent = "LOADING...";
+    const loadingSymbol = document.createElement("span");
+    loadingSymbol.className = "explorer-loading-symbol";
+    loadingSymbol.setAttribute("aria-hidden", "true");
+    loadingSymbol.textContent = LOADING_FRAMES[loadingFrameIndex];
+    loading.append(loadingSymbol, " LOADING");
     explorerTree.append(loading);
     return;
   }
@@ -951,6 +1144,52 @@ function appendExplorerFolder(folder, depth) {
 function renderExplorerTree() {
   explorerTree.replaceChildren();
   appendExplorerFolder(explorerRoot, 0);
+}
+
+function updateExplorerLoadingIndicators() {
+  const frame = LOADING_FRAMES[loadingFrameIndex];
+  for (const symbol of explorerTree.querySelectorAll(
+    ".explorer-loading-symbol"
+  )) {
+    symbol.textContent = frame;
+  }
+  if (getActiveTab()?.loading) {
+    editorStateSymbol.textContent = frame;
+  }
+  loadingFrameIndex = (loadingFrameIndex + 1) % LOADING_FRAMES.length;
+}
+
+function hasLoadingExplorerFolder(folder = explorerRoot) {
+  return (
+    folder.loading ||
+    folder.children.some(
+      (child) =>
+        child.mimeType === FOLDER_MIME_TYPE && hasLoadingExplorerFolder(child)
+    )
+  );
+}
+
+function startExplorerLoadingAnimation() {
+  updateExplorerLoadingIndicators();
+  if (
+    !loadingAnimationTimer &&
+    !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  ) {
+    loadingAnimationTimer = setInterval(updateExplorerLoadingIndicators, 80);
+  }
+}
+
+function stopExplorerLoadingAnimation() {
+  if (
+    !openingDriveFileIds.size &&
+    !hasLoadingExplorerFolder() &&
+    loadingAnimationTimer
+  ) {
+    clearInterval(loadingAnimationTimer);
+    loadingAnimationTimer = null;
+    loadingFrameIndex = 0;
+  }
+  updateExplorerLoadingIndicators();
 }
 
 async function listDriveFolder(folderId) {
@@ -1009,19 +1248,37 @@ async function loadExplorerFolder(folder, force = false) {
   folder.loading = true;
   folder.expanded = true;
   renderExplorerTree();
+  startExplorerLoadingAnimation();
+  let createDestinationChanged = false;
   try {
     folder.children = await listDriveFolder(folder.id);
     folder.loaded = true;
+    if (explorerCreateOperation) {
+      const operationParent = findExplorerFolder(
+        explorerCreateOperation.parentId
+      );
+      if (operationParent) {
+        operationParent.expanded = true;
+      } else {
+        explorerCreateOperation.parentId = folder.id;
+        explorerCreateOperation.focusPending = true;
+        createDestinationChanged = true;
+        setStatus("CREATE DESTINATION CHANGED TO REFRESHED FOLDER");
+      }
+    }
     if (!findExplorerFolder(selectedExplorerFolderId)) {
       selectedExplorerFolderId = folder.id;
     }
-    setStatus("EXPLORER UPDATED");
+    if (!createDestinationChanged) {
+      setStatus("EXPLORER UPDATED");
+    }
   } catch (error) {
     console.error(error);
     setStatus(error.message);
   } finally {
     folder.loading = false;
     renderExplorerTree();
+    stopExplorerLoadingAnimation();
   }
 }
 
@@ -1034,6 +1291,14 @@ function selectExplorerFolder(folder) {
   }
 
   if (folder.loaded) {
+    if (
+      folder.expanded &&
+      explorerCreateOperation &&
+      findExplorerFolder(explorerCreateOperation.parentId, folder)
+    ) {
+      setStatus("FINISH OR CANCEL THE CURRENT CREATE OPERATION");
+      return;
+    }
     folder.expanded = !folder.expanded;
     renderExplorerTree();
   } else {
@@ -1050,11 +1315,43 @@ function refreshExplorer() {
   requestDriveAccess(() => refreshExplorerFolder());
 }
 
-function createExplorerFile() {
+function beginExplorerCreate(type, targetTab = null) {
+  if (explorerCreateOperation) {
+    setStatus("FINISH OR CANCEL THE CURRENT CREATE OPERATION");
+    return false;
+  }
+
   const parent = findExplorerFolder(selectedExplorerFolderId) || explorerRoot;
+  if (targetTab && document.body.classList.contains("explorer-collapsed")) {
+    document.body.classList.remove("explorer-collapsed");
+    explorerToggle.setAttribute("aria-expanded", "true");
+  }
   selectedExplorerFolderId = parent.id;
-  createUntitledTab(parent.id);
-  setStatus("NEW BUFFER IN SELECTED DRIVE FOLDER");
+  parent.expanded = true;
+  explorerCreateOperation = {
+    type,
+    parentId: parent.id,
+    name: type === "file" ? ".txt" : "",
+    submitting: false,
+    focusPending: true,
+    tabId: targetTab?.id || null,
+  };
+  if (targetTab) {
+    targetTab.savePending = true;
+    updateSaveButton();
+  }
+  updateExplorerCreateButtons();
+  renderExplorerTree();
+  return true;
+}
+
+function updateExplorerCreateButtons() {
+  const disabled =
+    !editorReady || !driveClientReady || Boolean(explorerCreateOperation);
+  explorerNewFileButton.disabled = disabled;
+  explorerNewFolderButton.disabled = disabled;
+  explorerRefreshButton.disabled =
+    !driveClientReady || Boolean(explorerCreateOperation);
 }
 
 function isDriveDestinationUnavailable(error) {
@@ -1064,45 +1361,232 @@ function isDriveDestinationUnavailable(error) {
   );
 }
 
-async function createExplorerFolder() {
-  const parent = findExplorerFolder(selectedExplorerFolderId) || explorerRoot;
-  selectedExplorerFolderId = parent.id;
-  renderExplorerTree();
-  const name = prompt("Folder name:");
-  if (!name?.trim()) {
+function cancelExplorerCreate() {
+  if (!explorerCreateOperation?.submitting) {
+    const type = explorerCreateOperation.type;
+    const targetTab = tabs.find(
+      (tab) => tab.id === explorerCreateOperation.tabId
+    );
+    if (targetTab) {
+      targetTab.savePending = false;
+      updateSaveButton();
+    }
+    explorerCreateOperation = null;
+    updateExplorerCreateButtons();
+    renderExplorerTree();
+    setStatus("CREATE CANCELLED");
+    requestAnimationFrame(() => {
+      (type === "file"
+        ? explorerNewFileButton
+        : explorerNewFolderButton
+      ).focus();
+    });
+  }
+}
+
+function resetExplorerCreateSubmission(operation) {
+  if (explorerCreateOperation === operation) {
+    operation.submitting = false;
+    operation.focusPending = true;
+    renderExplorerTree();
+  }
+}
+
+function submitExplorerCreate(operation) {
+  const name = operation.name.trim();
+  if (!name || (operation.type === "file" && name === ".txt")) {
+    operation.focusPending = true;
+    renderExplorerTree();
+    setStatus(operation.type === "file" ? "ENTER A FILE NAME" : "ENTER A FOLDER NAME");
     return;
   }
 
+  operation.name = name;
+  operation.submitting = true;
+  renderExplorerTree();
+  const requested = requestDriveAccess(
+    () => createExplorerItem(operation),
+    () => resetExplorerCreateSubmission(operation)
+  );
+  if (!requested) {
+    resetExplorerCreateSubmission(operation);
+  }
+}
+
+function createExplorerInputRow(depth) {
+  const operation = explorerCreateOperation;
+  const row = document.createElement("div");
+  row.className = "explorer-create-row";
+  row.setAttribute("role", "treeitem");
+  row.style.paddingLeft = `${8 + depth * 16}px`;
+
+  const marker = document.createElement("span");
+  marker.className = "explorer-marker";
+  marker.setAttribute("aria-hidden", "true");
+  marker.textContent = operation.submitting
+    ? "..."
+    : operation.type === "file"
+      ? "[ ]"
+      : "[+]";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "explorer-create-input";
+  input.value = operation.name;
+  input.disabled = operation.submitting;
+  input.setAttribute(
+    "aria-label",
+    operation.type === "file" ? "New file name" : "New folder name"
+  );
+  input.addEventListener("input", () => {
+    if (explorerCreateOperation === operation) {
+      operation.name = input.value;
+    }
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelExplorerCreate();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      submitExplorerCreate(operation);
+    }
+  });
+
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.className = "explorer-create-cancel";
+  cancelButton.textContent = "X";
+  cancelButton.disabled = operation.submitting;
+  cancelButton.setAttribute("aria-label", "Cancel create");
+  cancelButton.addEventListener("click", cancelExplorerCreate);
+
+  row.append(marker, input, cancelButton);
+  if (operation.focusPending && !operation.submitting) {
+    operation.focusPending = false;
+    requestAnimationFrame(() => {
+      input.focus();
+      const cursorPosition = operation.type === "file" ? 0 : input.value.length;
+      input.setSelectionRange(cursorPosition, cursorPosition);
+    });
+  }
+
+  return row;
+}
+
+async function createDriveTextFile(parentId, name, content) {
+  const boundary = `drive_editor_${Date.now()}`;
+  const body = [
+    `--${boundary}`,
+    "Content-Type: application/json; charset=UTF-8",
+    "",
+    JSON.stringify({ name, mimeType: "text/plain", parents: [parentId] }),
+    `--${boundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "",
+    content,
+    `--${boundary}--`,
+    "",
+  ].join("\r\n");
+  const response = await driveFetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,parents,version,modifiedTime",
+    {
+      method: "POST",
+      headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+      body,
+    }
+  );
+  return response.json();
+}
+
+async function refreshExplorerAfterCreate(folderId) {
+  let folderPath = findExplorerFolderPath(folderId);
+  while (folderPath?.some((folder) => folder.loading)) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    folderPath = findExplorerFolderPath(folderId);
+  }
+  const liveFolder = findExplorerFolder(folderId) || explorerRoot;
+  await loadExplorerFolder(liveFolder, true);
+}
+
+async function createExplorerItem(operation) {
+  const parent = findExplorerFolder(operation.parentId) || explorerRoot;
+  const isFile = operation.type === "file";
+  const targetTab = tabs.find((tab) => tab.id === operation.tabId) || null;
+  const content = targetTab?.model.getValue() || "";
+  renderExplorerTree();
+
   try {
-    setStatus("CREATING FOLDER");
-    await driveFetch(
-      "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name,mimeType,parents",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: name.trim(),
-          mimeType: FOLDER_MIME_TYPE,
-          parents: [parent.id],
-        }),
+    setStatus(isFile ? "CREATING FILE" : "CREATING FOLDER");
+    let created;
+    if (isFile) {
+      created = await createDriveTextFile(parent.id, operation.name, content);
+    } else {
+      const response = await driveFetch(
+        "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name,mimeType,parents,version,modifiedTime",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: operation.name,
+            mimeType: FOLDER_MIME_TYPE,
+            parents: [parent.id],
+          }),
+        }
+      );
+      created = await response.json();
+    }
+    await refreshExplorerAfterCreate(parent.id);
+    if (isFile) {
+      if (targetTab) {
+        targetTab.savePending = false;
+        targetTab.file = created;
+        targetTab.name = created.name;
+        targetTab.dirty = targetTab.model.getValue() !== content;
+        syncDraftAfterSave(targetTab);
+        monaco.editor.setModelLanguage(
+          targetTab.model,
+          languageFromFilename(targetTab.name)
+        );
+        renderTabs();
+        updateActiveFileDisplay();
+        updateSaveButton();
+      } else {
+        createTab({ name: created.name, content: "", file: created });
       }
-    );
-    await loadExplorerFolder(parent, true);
-    setStatus("FOLDER CREATED");
+      explorerCreateOperation = null;
+      updateExplorerCreateButtons();
+      renderExplorerTree();
+      setStatus("FILE CREATED");
+    } else {
+      selectedExplorerFolderId = created.id;
+      explorerCreateOperation = null;
+      updateExplorerCreateButtons();
+      renderExplorerTree();
+      setStatus("FOLDER CREATED");
+      requestAnimationFrame(() => {
+        for (const row of explorerTree.querySelectorAll(".explorer-row")) {
+          if (row.dataset.itemId === created.id) {
+            row.focus();
+            break;
+          }
+        }
+      });
+    }
   } catch (error) {
     console.error(error);
     if (isDriveDestinationUnavailable(error)) {
       selectedExplorerFolderId = EXPLORER_ROOT_ID;
+      operation.parentId = EXPLORER_ROOT_ID;
+      operation.submitting = false;
+      operation.focusPending = true;
       renderExplorerTree();
       setStatus("DESTINATION UNAVAILABLE: SELECTED MY DRIVE");
     } else {
       setStatus(error.message);
+      resetExplorerCreateSubmission(operation);
     }
   }
-}
-
-function requestExplorerFolderCreation() {
-  requestDriveAccess(createExplorerFolder);
 }
 
 renderExplorerTree();
@@ -1122,16 +1606,16 @@ require(["vs/editor/editor.main"], () => {
     automaticLayout: true,
     minimap: { enabled: false },
     wordWrap: "on",
-    fontFamily: '"Courier New", Courier, monospace',
-    fontSize: 14,
+    fontFamily: getFont(themePreferences.editorFont).stack,
+    fontSize: themePreferences.editorFontSize,
     lineNumbersMinChars: 3,
     padding: { top: 8 },
     readOnly: true,
   });
   editor.onDidChangeCursorPosition(updateEditorStats);
-  newButton.disabled = false;
-  openButton.disabled = false;
-  explorerNewFileButton.disabled = false;
+  editorReady = true;
+  newTabButton.disabled = false;
+  updateExplorerCreateButtons();
   createUntitledTab();
   showRecoveryDrafts();
 });
@@ -1146,36 +1630,36 @@ document.addEventListener("visibilitychange", () => {
 });
 
 window.addEventListener("load", () => {
-  gapi.load("picker", {
-    callback: () => {
-      pickerReady = true;
-    },
-  });
-
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: clientId,
     scope: DRIVE_SCOPE,
     error_callback: (error) => {
-      const request = pendingAuthorizationRequest;
-      pendingAuthorizationRequest = null;
-      request?.onError?.();
+      const requests = pendingAuthorizationRequests;
+      pendingAuthorizationRequests = [];
+      for (const request of requests) {
+        request.onError?.();
+      }
       setStatus(`AUTH FAILED: ${error.type || "POPUP ERROR"}`);
     },
     callback: (response) => {
-      const request = pendingAuthorizationRequest;
-      pendingAuthorizationRequest = null;
+      const requests = pendingAuthorizationRequests;
+      pendingAuthorizationRequests = [];
       if (response.error) {
-        request?.onError?.();
+        for (const request of requests) {
+          request.onError?.();
+        }
         setStatus(`AUTH FAILED: ${response.error}`);
         return;
       }
 
       accessToken = response.access_token;
-      request?.run();
+      for (const request of requests) {
+        request.run();
+      }
     },
   });
-  explorerNewFolderButton.disabled = false;
-  explorerRefreshButton.disabled = false;
+  driveClientReady = true;
+  updateExplorerCreateButtons();
 });
 
 window.addEventListener("beforeunload", (event) => {
@@ -1190,13 +1674,13 @@ explorerToggle.addEventListener("click", () => {
   const collapsed = document.body.classList.toggle("explorer-collapsed");
   explorerToggle.setAttribute("aria-expanded", String(!collapsed));
 });
-newButton.addEventListener("click", () => createUntitledTab());
-openButton.addEventListener("click", () => requestPicker("file"));
+newTabButton.addEventListener("click", () => createUntitledTab());
 saveButton.addEventListener("click", saveFile);
-explorerNewFileButton.addEventListener("click", createExplorerFile);
-explorerNewFolderButton.addEventListener(
-  "click",
-  requestExplorerFolderCreation
+explorerNewFileButton.addEventListener("click", () =>
+  beginExplorerCreate("file")
+);
+explorerNewFolderButton.addEventListener("click", () =>
+  beginExplorerCreate("folder")
 );
 explorerRefreshButton.addEventListener("click", refreshExplorer);
 
@@ -1212,32 +1696,8 @@ document.addEventListener("keydown", (event) => {
   } else if (key === "n") {
     event.preventDefault();
     createUntitledTab();
-  } else if (key === "o") {
-    event.preventDefault();
-    requestPicker("file");
   }
 });
-
-function requestPicker(mode, tabId = null) {
-  if (!pickerReady) {
-    setStatus("PICKER LOADING");
-    return false;
-  }
-
-  return requestDriveAccess(
-    () => showPicker(mode, tabId),
-    () => {
-      if (!tabId) {
-        return;
-      }
-      const tab = tabs.find((candidate) => candidate.id === tabId);
-      if (tab) {
-        tab.savePending = false;
-        updateSaveButton();
-      }
-    }
-  );
-}
 
 function requestDriveAccess(run, onError = null) {
   if (accessToken) {
@@ -1245,71 +1705,69 @@ function requestDriveAccess(run, onError = null) {
     return true;
   }
 
-  if (pendingAuthorizationRequest) {
+  pendingAuthorizationRequests.push({ run, onError });
+  if (pendingAuthorizationRequests.length > 1) {
     setStatus("AUTHORIZATION ALREADY IN PROGRESS");
-    return false;
+    return true;
   }
 
-  pendingAuthorizationRequest = { run, onError };
   tokenClient.requestAccessToken({ prompt: "consent" });
   return true;
 }
 
-function showPicker(mode, tabId) {
-  const view = new google.picker.DocsView()
-    .setMode(google.picker.DocsViewMode.LIST)
-    .setIncludeFolders(mode === "folder")
-    .setSelectFolderEnabled(mode === "folder");
-
-  if (mode === "folder") {
-    view.setMimeTypes(FOLDER_MIME_TYPE);
-  }
-
-  const picker = new google.picker.PickerBuilder()
-    .setDeveloperKey(apiKey)
-    .setAppId(appId)
-    .setOAuthToken(accessToken)
-    .addView(view)
-    .setTitle(mode === "folder" ? "Choose a folder for this file" : "Open from Drive")
-    .setCallback((data) => handlePickerResult(data, mode, tabId))
-    .build();
-
-  picker.setVisible(true);
-}
-
-async function handlePickerResult(data, mode, tabId) {
-  if (data.action !== google.picker.Action.PICKED) {
-    if (mode === "folder" && data.action === google.picker.Action.CANCEL) {
-      const tab = tabs.find((candidate) => candidate.id === tabId);
-      if (tab) {
-        tab.savePending = false;
-        updateSaveButton();
-      }
+function openDriveFile(fileId, initialFile = null) {
+  const existingTab = tabs.find((tab) => tab.file?.id === fileId);
+  if (existingTab) {
+    activateTab(existingTab.id);
+    if (existingTab.loadError && !openingDriveFileIds.has(fileId)) {
+      existingTab.loadError = null;
+      existingTab.loading = true;
+      updateEditorState();
+      beginDriveFileLoad(existingTab);
+    } else {
+      setStatus("ALREADY OPEN");
     }
     return;
   }
 
-  const selected = data.docs[0];
-  if (mode === "folder") {
-    await createDriveFile(selected.id, tabId);
-  } else {
-    await openDriveFile(selected.id);
+  const loadingTab = createTab({
+    name: initialFile?.name || "LOADING...",
+    file: { ...initialFile, id: fileId },
+    loading: true,
+  });
+  beginDriveFileLoad(loadingTab);
+}
+
+function beginDriveFileLoad(tab) {
+  const fileId = tab.file.id;
+  openingDriveFileIds.add(fileId);
+  startExplorerLoadingAnimation();
+  const requested = requestDriveAccess(
+    () => loadDriveFile(tab),
+    () => failDriveFileLoad(tab, "AUTHORIZATION FAILED")
+  );
+  if (!requested) {
+    failDriveFileLoad(tab, "AUTHORIZATION ALREADY IN PROGRESS");
   }
 }
 
-async function openDriveFile(fileId) {
-  const existingTab = tabs.find((tab) => tab.file?.id === fileId);
-  if (existingTab) {
-    activateTab(existingTab.id);
-    setStatus("ALREADY OPEN");
-    return;
+function failDriveFileLoad(tab, message) {
+  openingDriveFileIds.delete(tab.file.id);
+  if (tabs.includes(tab)) {
+    tab.loading = false;
+    tab.loadError = message;
+    renderTabs();
+    updateSaveButton();
+    if (tab.id === activeTabId) {
+      updateEditorState();
+    }
   }
-  if (openingDriveFileIds.has(fileId)) {
-    setStatus("FILE IS ALREADY LOADING");
-    return;
-  }
+  setStatus(message);
+  stopExplorerLoadingAnimation();
+}
 
-  openingDriveFileIds.add(fileId);
+async function loadDriveFile(tab) {
+  const fileId = tab.file.id;
   try {
     let stableFile = null;
     let stableContent = null;
@@ -1359,41 +1817,57 @@ async function openDriveFile(fileId) {
       throw new Error("FILE KEPT CHANGING IN DRIVE: TRY OPENING IT AGAIN");
     }
 
-    createTab({
-      name: stableFile.name,
-      content: stableContent,
-      file: stableFile,
-    });
+    if (!tabs.includes(tab)) {
+      return;
+    }
+    tab.suppressDirtyTracking = true;
+    tab.model.setValue(stableContent);
+    tab.suppressDirtyTracking = false;
+    tab.file = stableFile;
+    tab.name = stableFile.name;
+    tab.loading = false;
+    tab.loadError = null;
+    monaco.editor.setModelLanguage(tab.model, languageFromFilename(tab.name));
+    renderTabs();
+    updateActiveFileDisplay();
+    updateSaveButton();
+    if (tab.id === activeTabId) {
+      updateEditorState();
+      editor.focus();
+    }
     setStatus("LOADED");
   } catch (error) {
     console.error(error);
+    if (tabs.includes(tab)) {
+      tab.loading = false;
+      tab.loadError = error.message;
+      renderTabs();
+      updateSaveButton();
+      if (tab.id === activeTabId) {
+        updateEditorState();
+      }
+    }
     setStatus(error.message);
   } finally {
     openingDriveFileIds.delete(fileId);
+    stopExplorerLoadingAnimation();
   }
 }
 
 async function saveFile() {
   const tab = getActiveTab();
-  if (!tab || tab.saving || tab.savePending) {
+  if (
+    !tab ||
+    tab.saving ||
+    tab.savePending ||
+    tab.loading ||
+    tab.loadError
+  ) {
     return;
   }
 
   if (!tab.file) {
-    tab.savePending = true;
-    const requested = tab.parentFolderId
-      ? requestDriveAccess(
-          () => createDriveFile(tab.parentFolderId, tab.id),
-          () => {
-            tab.savePending = false;
-            updateSaveButton();
-          }
-        )
-      : requestPicker("folder", tab.id);
-    if (!requested) {
-      tab.savePending = false;
-    }
-    updateSaveButton();
+    beginExplorerCreate("file", tab);
     return;
   }
 
@@ -1461,86 +1935,6 @@ async function saveExistingDriveFile(tab) {
   } catch (error) {
     console.error(error);
     setStatus(error.message);
-  } finally {
-    tab.saving = false;
-    updateSaveButton();
-  }
-}
-
-async function createDriveFile(folderId, tabId) {
-  const tab = tabs.find((candidate) => candidate.id === tabId);
-  if (tab) {
-    tab.savePending = false;
-  }
-  if (!tab || tab.file) {
-    updateSaveButton();
-    return;
-  }
-
-  const name = prompt("Filename, including extension:", tab.name);
-  if (!name?.trim()) {
-    setStatus("SAVE CANCELLED");
-    updateSaveButton();
-    return;
-  }
-
-  const content = tab.model.getValue();
-  try {
-    tab.saving = true;
-    updateSaveButton();
-    setStatus("CREATING");
-    const boundary = `drive_editor_${Date.now()}`;
-    const metadata = {
-      name: name.trim(),
-      mimeType: "text/plain",
-      parents: [folderId],
-    };
-    const body = [
-      `--${boundary}`,
-      "Content-Type: application/json; charset=UTF-8",
-      "",
-      JSON.stringify(metadata),
-      `--${boundary}`,
-      "Content-Type: text/plain; charset=UTF-8",
-      "",
-      content,
-      `--${boundary}--`,
-      "",
-    ].join("\r\n");
-
-    const response = await driveFetch(
-      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,parents,version,modifiedTime",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": `multipart/related; boundary=${boundary}`,
-        },
-        body,
-      }
-    );
-
-    const explorerParentId = tab.parentFolderId;
-    tab.file = await response.json();
-    tab.parentFolderId = null;
-    tab.name = tab.file.name;
-    tab.dirty = tab.model.getValue() !== content;
-    syncDraftAfterSave(tab);
-    monaco.editor.setModelLanguage(tab.model, languageFromFilename(tab.name));
-    renderTabs();
-    updateActiveFileDisplay();
-    setStatus(tab.dirty ? "SAVED | NEW CHANGES PENDING" : "SAVED");
-    if (explorerParentId) {
-      refreshExplorerFolder(explorerParentId);
-    }
-  } catch (error) {
-    console.error(error);
-    if (tab.parentFolderId && isDriveDestinationUnavailable(error)) {
-      tab.parentFolderId = null;
-      scheduleDraftSave(tab);
-      setStatus("DESTINATION UNAVAILABLE: CHOOSE A FOLDER ON NEXT SAVE");
-    } else {
-      setStatus(error.message);
-    }
   } finally {
     tab.saving = false;
     updateSaveButton();

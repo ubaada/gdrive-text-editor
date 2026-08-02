@@ -2,10 +2,21 @@ html,
 body {
   height: 100%;
   margin: 0;
-  font-family: "Courier New", Courier, monospace;
+  font-family: var(
+    --ui-font,
+    "GT America Mono",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    monospace
+  );
 }
 
 body {
+  --ui-font-size: 14px;
+  --ui-small-font-size: 12px;
   --background: #0a0a0a;
   --ink: #e4e4e4;
   --dim: #747474;
@@ -15,7 +26,7 @@ body {
   overflow: hidden;
   background: var(--background);
   color: var(--ink);
-  font-size: 14px;
+  font-size: var(--ui-font-size);
 }
 
 body[data-theme-mode="dark"] {
@@ -31,6 +42,7 @@ header {
   align-items: center;
   gap: 0;
   min-height: 42px;
+  overflow-x: auto;
   border-bottom: 1px solid var(--ink);
   background: var(--panel);
 }
@@ -71,13 +83,27 @@ button:disabled {
   background: transparent;
 }
 
-#tabs {
+.tabs-bar {
   display: flex;
   min-height: 34px;
-  overflow-x: auto;
-  overflow-y: hidden;
   border-bottom: 1px solid var(--ink);
   background: var(--background);
+}
+
+#tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+#newTabButton {
+  flex: 0 0 36px;
+  padding: 0;
+  border-right: 0;
+  border-left: 1px solid var(--ink);
+  font-size: var(--ui-font-size);
 }
 
 .workspace {
@@ -133,7 +159,7 @@ body.explorer-collapsed #fileExplorer {
   min-width: 0;
   padding: 0 6px;
   border-right: 1px solid var(--dim);
-  font-size: 12px;
+  font-size: var(--ui-small-font-size);
 }
 
 .explorer-actions button:last-child {
@@ -191,8 +217,50 @@ body.explorer-collapsed #fileExplorer {
 .explorer-message {
   padding: 12px 10px;
   color: var(--dim);
-  font-size: 12px;
+  font-size: var(--ui-small-font-size);
   line-height: 1.5;
+}
+
+.explorer-create-row {
+  display: flex;
+  min-height: 31px;
+  align-items: stretch;
+  border-bottom: 1px solid var(--dim);
+  background: var(--background);
+}
+
+.explorer-create-row .explorer-marker {
+  display: flex;
+  align-items: center;
+}
+
+.explorer-create-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  padding: 0 5px;
+  outline: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+}
+
+.explorer-create-input:focus {
+  background: var(--ink);
+  color: var(--background);
+}
+
+.explorer-create-input:disabled {
+  border-color: var(--dim);
+  color: var(--dim);
+}
+
+.explorer-create-cancel {
+  flex: 0 0 30px;
+  padding: 0;
+  border-right: 0;
+  border-left: 1px solid var(--dim);
 }
 
 .tab {
@@ -228,7 +296,7 @@ body.explorer-collapsed #fileExplorer {
   border: 0;
   border-left: 1px solid currentColor;
   color: inherit;
-  font-size: 14px;
+  font-size: var(--ui-font-size);
   line-height: 1;
 }
 
@@ -252,8 +320,35 @@ body.explorer-collapsed #fileExplorer {
 }
 
 #editor {
+  position: absolute;
+  inset: 0;
+}
+
+.editor-surface {
+  position: relative;
   flex: 1;
   min-height: 0;
+}
+
+.editor-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--background);
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.editor-state[hidden] {
+  display: none;
+}
+
+.editor-state-symbol {
+  min-width: 1ch;
 }
 
 footer {
@@ -265,7 +360,7 @@ footer {
   border-top: 1px solid var(--ink);
   background: var(--panel);
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--ui-small-font-size);
   text-transform: uppercase;
 }
 
@@ -319,7 +414,7 @@ footer > span {
   align-items: center;
   margin: 0;
   padding: 0 14px;
-  font-size: 14px;
+  font-size: var(--ui-font-size);
   letter-spacing: 0.12em;
 }
 
@@ -378,7 +473,7 @@ footer > span {
   margin: 0 0 24px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--dim);
-  font-size: 14px;
+  font-size: var(--ui-font-size);
   letter-spacing: 0.1em;
 }
 
@@ -399,6 +494,11 @@ footer > span {
 
 .setting-label {
   font-weight: 700;
+}
+
+.settings-note {
+  color: var(--dim);
+  font-size: var(--ui-small-font-size);
 }
 
 .segmented-toggle {
@@ -522,7 +622,7 @@ select:disabled {
 .recovery-time {
   margin-top: 4px;
   color: var(--dim);
-  font-size: 12px;
+  font-size: var(--ui-small-font-size);
 }
 
 .recovery-item button {
@@ -531,17 +631,13 @@ select:disabled {
 }
 
 @media (max-width: 600px) {
-  body {
-    font-size: 12px;
-  }
-
   .app-title {
     display: none;
   }
 
   header button {
     padding: 0 5px;
-    font-size: 10px;
+    font-size: var(--ui-small-font-size);
   }
 
   .tab {

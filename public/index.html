@@ -7,7 +7,6 @@
   <link rel="stylesheet" href="/styles.css">
 
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script src="https://apis.google.com/js/api.js"></script>
 
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
 </head>
@@ -16,8 +15,6 @@
   <header>
     <button id="explorerToggle" type="button" aria-controls="fileExplorer" aria-expanded="true">[=]</button>
     <span class="app-title">DRIVE.EDIT</span>
-    <button id="newButton" disabled>[N] NEW</button>
-    <button id="openButton" disabled>[O] OPEN</button>
     <button id="saveButton" disabled>[S] SAVE</button>
     <button id="settingsButton">[G] SETTINGS</button>
   </header>
@@ -36,13 +33,22 @@
     </aside>
 
     <section class="editor-pane">
-      <nav id="tabs" aria-label="Open files" role="tablist"></nav>
-      <main id="editor"></main>
+      <div class="tabs-bar">
+        <nav id="tabs" aria-label="Open files" role="tablist"></nav>
+        <button id="newTabButton" type="button" disabled aria-label="New tab" title="New tab">+</button>
+      </div>
+      <div class="editor-surface">
+        <main id="editor"></main>
+        <div id="editorState" class="editor-state" role="status" aria-live="polite" aria-atomic="true" hidden>
+          <span id="editorStateSymbol" class="editor-state-symbol" aria-hidden="true"></span>
+          <span id="editorStateMessage">LOADING FILE</span>
+        </div>
+      </div>
     </section>
   </div>
   <footer>
     <span id="filename">NO FILE</span>
-    <span id="status">READY</span>
+    <span id="status" role="status" aria-live="polite">READY</span>
     <span id="cursorPosition" class="footer-cell">LN --, COL --</span>
     <span id="documentStats" class="footer-cell">0 LINES | 0 WORDS | 0 CHARS | 0 BYTES</span>
   </footer>
@@ -73,6 +79,27 @@
         <div class="setting-row">
           <label class="setting-label" for="followSystemToggle">FOLLOW SYSTEM</label>
           <input id="followSystemToggle" class="box-checkbox" type="checkbox">
+        </div>
+
+        <div class="setting-row stacked">
+          <label class="setting-label" for="uiFontSelect">UI FONT</label>
+          <select id="uiFontSelect"></select>
+          <span class="settings-note">GT AMERICA MONO REQUIRES A LOCAL INSTALLATION.</span>
+        </div>
+
+        <div class="setting-row stacked">
+          <label class="setting-label" for="uiFontSizeSelect">UI FONT SIZE</label>
+          <select id="uiFontSizeSelect"></select>
+        </div>
+
+        <div class="setting-row stacked">
+          <label class="setting-label" for="editorFontSelect">EDITOR FONT</label>
+          <select id="editorFontSelect"></select>
+        </div>
+
+        <div class="setting-row stacked">
+          <label class="setting-label" for="editorFontSizeSelect">EDITOR FONT SIZE</label>
+          <select id="editorFontSizeSelect"></select>
         </div>
 
         <div class="setting-row stacked">
