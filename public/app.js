@@ -2,6 +2,109 @@ const { clientId, apiKey, appId } = window.APP_CONFIG;
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+const THEME_STORAGE_KEY = "drive-edit-theme";
+const THEMES = {
+  dark: [
+    {
+      id: "terminal-green",
+      name: "Terminal Green",
+      background: "#020602",
+      foreground: "#8cff66",
+      dim: "#397c2d",
+      panel: "#071007",
+      selection: "#285c22",
+    },
+    {
+      id: "amber-crt",
+      name: "Amber CRT",
+      background: "#0b0802",
+      foreground: "#ffc15c",
+      dim: "#8c6128",
+      panel: "#171004",
+      selection: "#5e421d",
+    },
+    {
+      id: "midnight-blue",
+      name: "Midnight Blue",
+      background: "#030812",
+      foreground: "#8fc7ff",
+      dim: "#3a648d",
+      panel: "#07111f",
+      selection: "#244f78",
+    },
+    {
+      id: "violet-console",
+      name: "Violet Console",
+      background: "#0b0610",
+      foreground: "#dda7ff",
+      dim: "#76518d",
+      panel: "#150b1f",
+      selection: "#533269",
+    },
+    {
+      id: "carbon-white",
+      name: "Carbon White",
+      background: "#0a0a0a",
+      foreground: "#e4e4e4",
+      dim: "#747474",
+      panel: "#151515",
+      selection: "#3c3c3c",
+    },
+  ],
+  light: [
+    {
+      id: "paper-ink",
+      name: "Paper Ink",
+      background: "#f4f0df",
+      foreground: "#29291f",
+      dim: "#777461",
+      panel: "#e5dfc8",
+      selection: "#cbc4a9",
+    },
+    {
+      id: "arctic-blue",
+      name: "Arctic Blue",
+      background: "#eef5f8",
+      foreground: "#17384b",
+      dim: "#67818e",
+      panel: "#dce9ef",
+      selection: "#bdd3de",
+    },
+    {
+      id: "sage-terminal",
+      name: "Sage Terminal",
+      background: "#edf3e8",
+      foreground: "#243c28",
+      dim: "#6b806c",
+      panel: "#dce8d6",
+      selection: "#bed0b8",
+    },
+    {
+      id: "rose-print",
+      name: "Rose Print",
+      background: "#f8eeee",
+      foreground: "#4a252c",
+      dim: "#916e73",
+      panel: "#ecdadd",
+      selection: "#dcbfc4",
+    },
+    {
+      id: "solar-sand",
+      name: "Solar Sand",
+      background: "#f8f0d6",
+      foreground: "#463812",
+      dim: "#8d7b45",
+      panel: "#eee1b8",
+      selection: "#dac98d",
+    },
+  ],
+};
+const DEFAULT_THEME_PREFERENCES = {
+  mode: "dark",
+  followSystem: false,
+  darkTheme: "terminal-green",
+  lightTheme: "paper-ink",
+};
 
 let tokenClient;
 let accessToken = null;
@@ -16,12 +119,165 @@ let nextUntitledNumber = 1;
 const newButton = document.getElementById("newButton");
 const openButton = document.getElementById("openButton");
 const saveButton = document.getElementById("saveButton");
+const settingsButton = document.getElementById("settingsButton");
 const tabsElement = document.getElementById("tabs");
 const filename = document.getElementById("filename");
 const status = document.getElementById("status");
 const cursorPosition = document.getElementById("cursorPosition");
 const documentStats = document.getElementById("documentStats");
+const settingsDialog = document.getElementById("settingsDialog");
+const closeSettingsButton = document.getElementById("closeSettingsButton");
+const darkModeToggle = document.getElementById("darkModeToggle");
+const followSystemToggle = document.getElementById("followSystemToggle");
+const darkThemeSelect = document.getElementById("darkThemeSelect");
+const lightThemeSelect = document.getElementById("lightThemeSelect");
 const textEncoder = new TextEncoder();
+const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+let themePreferences = loadThemePreferences();
+
+function loadThemePreferences() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(THEME_STORAGE_KEY));
+    return {
+      mode: stored?.mode === "light" ? "light" : "dark",
+      followSystem:
+        typeof stored?.followSystem === "boolean"
+          ? stored.followSystem
+          : DEFAULT_THEME_PREFERENCES.followSystem,
+      darkTheme: THEMES.dark.some((theme) => theme.id === stored?.darkTheme)
+        ? stored.darkTheme
+        : DEFAULT_THEME_PREFERENCES.darkTheme,
+      lightTheme: THEMES.light.some((theme) => theme.id === stored?.lightTheme)
+        ? stored.lightTheme
+        : DEFAULT_THEME_PREFERENCES.lightTheme,
+    };
+  } catch {
+    return { ...DEFAULT_THEME_PREFERENCES };
+  }
+}
+
+function populateThemeSelect(select, themes) {
+  for (const theme of themes) {
+    const option = document.createElement("option");
+    option.value = theme.id;
+    option.textContent = theme.name;
+    select.append(option);
+  }
+}
+
+function getActiveTheme() {
+  const mode = themePreferences.followSystem
+    ? systemTheme.matches
+      ? "dark"
+      : "light"
+    : themePreferences.mode;
+  const selectedId = themePreferences[`${mode}Theme`];
+  const theme = THEMES[mode].find((candidate) => candidate.id === selectedId);
+
+  return { mode, theme: theme || THEMES[mode][0] };
+}
+
+function applyTheme() {
+  const { mode, theme } = getActiveTheme();
+  document.body.style.setProperty("--background", theme.background);
+  document.body.style.setProperty("--ink", theme.foreground);
+  document.body.style.setProperty("--dim", theme.dim);
+  document.body.style.setProperty("--panel", theme.panel);
+  document.body.dataset.themeMode = mode;
+
+  if (typeof monaco === "undefined") {
+    return;
+  }
+
+  monaco.editor.defineTheme("drive-edit-theme", {
+    base: mode === "dark" ? "vs-dark" : "vs",
+    inherit: false,
+    rules: [{ token: "", foreground: theme.foreground.slice(1) }],
+    colors: {
+      "editor.background": theme.background,
+      "editor.foreground": theme.foreground,
+      "editorCursor.foreground": theme.foreground,
+      "editorLineNumber.foreground": theme.dim,
+      "editorLineNumber.activeForeground": theme.foreground,
+      "editor.selectionBackground": theme.selection,
+      "editor.inactiveSelectionBackground": theme.panel,
+      "editor.lineHighlightBackground": theme.panel,
+      "editorWhitespace.foreground": theme.dim,
+      "editorIndentGuide.background1": theme.panel,
+      "editorIndentGuide.activeBackground1": theme.dim,
+      "editorWidget.background": theme.panel,
+      "editorWidget.border": theme.foreground,
+      "input.background": theme.background,
+      "input.foreground": theme.foreground,
+      "input.border": theme.dim,
+      "dropdown.background": theme.panel,
+      "dropdown.foreground": theme.foreground,
+      "dropdown.border": theme.dim,
+      "list.hoverBackground": theme.selection,
+      "list.activeSelectionBackground": theme.foreground,
+      "list.activeSelectionForeground": theme.background,
+      focusBorder: theme.foreground,
+    },
+  });
+  monaco.editor.setTheme("drive-edit-theme");
+}
+
+function updateThemeControls() {
+  darkModeToggle.checked = themePreferences.mode === "dark";
+  darkModeToggle.disabled = themePreferences.followSystem;
+  followSystemToggle.checked = themePreferences.followSystem;
+  darkThemeSelect.value = themePreferences.darkTheme;
+  lightThemeSelect.value = themePreferences.lightTheme;
+  darkThemeSelect.disabled =
+    !themePreferences.followSystem && themePreferences.mode !== "dark";
+  lightThemeSelect.disabled =
+    !themePreferences.followSystem && themePreferences.mode !== "light";
+}
+
+function saveThemePreferences() {
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(themePreferences));
+  } catch (error) {
+    console.warn("Could not save theme preferences.", error);
+  }
+
+  updateThemeControls();
+  applyTheme();
+}
+
+populateThemeSelect(darkThemeSelect, THEMES.dark);
+populateThemeSelect(lightThemeSelect, THEMES.light);
+updateThemeControls();
+applyTheme();
+
+settingsButton.addEventListener("click", () => settingsDialog.showModal());
+closeSettingsButton.addEventListener("click", () => settingsDialog.close());
+
+darkModeToggle.addEventListener("change", () => {
+  themePreferences.mode = darkModeToggle.checked ? "dark" : "light";
+  saveThemePreferences();
+});
+
+followSystemToggle.addEventListener("change", () => {
+  themePreferences.followSystem = followSystemToggle.checked;
+  saveThemePreferences();
+});
+
+darkThemeSelect.addEventListener("change", () => {
+  themePreferences.darkTheme = darkThemeSelect.value;
+  saveThemePreferences();
+});
+
+lightThemeSelect.addEventListener("change", () => {
+  themePreferences.lightTheme = lightThemeSelect.value;
+  saveThemePreferences();
+});
+
+systemTheme.addEventListener("change", () => {
+  if (themePreferences.followSystem) {
+    applyTheme();
+  }
+});
 
 function setStatus(message) {
   status.textContent = message;
@@ -196,28 +452,11 @@ require.config({
 });
 
 require(["vs/editor/editor.main"], () => {
-  monaco.editor.defineTheme("terminal-monochrome", {
-    base: "vs-dark",
-    inherit: false,
-    rules: [{ token: "", foreground: "8CFF66" }],
-    colors: {
-      "editor.background": "#020602",
-      "editor.foreground": "#8CFF66",
-      "editorCursor.foreground": "#8CFF66",
-      "editorLineNumber.foreground": "#397C2D",
-      "editorLineNumber.activeForeground": "#8CFF66",
-      "editor.selectionBackground": "#285C22",
-      "editor.inactiveSelectionBackground": "#173A16",
-      "editor.lineHighlightBackground": "#071007",
-      "editorWhitespace.foreground": "#397C2D",
-      "editorIndentGuide.background1": "#173A16",
-      "editorIndentGuide.activeBackground1": "#397C2D",
-    },
-  });
+  applyTheme();
 
   editor = monaco.editor.create(document.getElementById("editor"), {
     model: null,
-    theme: "terminal-monochrome",
+    theme: "drive-edit-theme",
     automaticLayout: true,
     minimap: { enabled: false },
     wordWrap: "on",
