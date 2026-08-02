@@ -27,8 +27,6 @@ jobs:
       - name: Generate browser configuration
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_PICKER_API_KEY: ${{ secrets.GOOGLE_PICKER_API_KEY }}
-          GOOGLE_PROJECT_NUMBER: ${{ secrets.GOOGLE_PROJECT_NUMBER }}
         run: |
           python3 - <<'PY'
           import json
@@ -37,8 +35,6 @@ jobs:
 
           config = {
               "clientId": os.environ["GOOGLE_CLIENT_ID"],
-              "apiKey": os.environ["GOOGLE_PICKER_API_KEY"],
-              "appId": os.environ["GOOGLE_PROJECT_NUMBER"],
           }
 
           Path("public/config.js").write_text(
