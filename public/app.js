@@ -981,11 +981,25 @@ function updateEditorState() {
   }
 }
 
+function formatByteSize(bytes) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const units = ["KB", "MB", "GB", "TB"];
+  const unitIndex = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)) - 1,
+    units.length - 1
+  );
+  const value = bytes / 1024 ** (unitIndex + 1);
+  return `${Number(value.toFixed(value >= 100 ? 0 : 1))} ${units[unitIndex]}`;
+}
+
 function updateEditorStats() {
   const tab = getActiveTab();
   if (!tab) {
     cursorPosition.textContent = "LN --, COL --";
-    documentStats.textContent = "0 LINES | 0 WORDS | 0 CHARS | 0 BYTES";
+    documentStats.textContent = "0 LINES | 0 WORDS | 0 CHARS | 0 B";
     return;
   }
 
@@ -996,7 +1010,7 @@ function updateEditorStats() {
   const bytes = textEncoder.encode(value).length;
 
   cursorPosition.textContent = `LN ${position.lineNumber}, COL ${position.column}`;
-  documentStats.textContent = `${tab.model.getLineCount()} LINES | ${words} WORDS | ${characters} CHARS | ${bytes} BYTES`;
+  documentStats.textContent = `${tab.model.getLineCount()} LINES | ${words} WORDS | ${characters} CHARS | ${formatByteSize(bytes)}`;
 }
 
 function findExplorerFolder(folderId, folder = explorerRoot) {
