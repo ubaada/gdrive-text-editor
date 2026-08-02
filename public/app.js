@@ -96,9 +96,10 @@ openButton.addEventListener("click", () => {
 saveButton.addEventListener("click", saveFile);
 
 function showPicker() {
-  const view = new google.picker.DocsView()
-    .setIncludeFolders(false)
-    .setSelectFolderEnabled(false);
+const view = new google.picker.DocsView()
+  .setMode(google.picker.DocsViewMode.LIST)
+  .setIncludeFolders(false)
+  .setSelectFolderEnabled(false);
 
   const picker = new google.picker.PickerBuilder()
     .setDeveloperKey(apiKey)
