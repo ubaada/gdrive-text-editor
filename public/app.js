@@ -355,6 +355,18 @@ async function getDraftRecords() {
   });
 }
 
+async function getDraftRecordById(draftId) {
+  const database = await getDraftDatabase();
+  return new Promise((resolve, reject) => {
+    const request = database
+      .transaction(DRAFT_STORE_NAME, "readonly")
+      .objectStore(DRAFT_STORE_NAME)
+      .get(draftId);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
 function reportDraftFailure(error) {
   console.error(error);
   setStatus("LOCAL RECOVERY FAILED");
@@ -454,7 +466,10 @@ async function importEmergencyDrafts() {
     first.updatedAt.localeCompare(second.updatedAt)
   );
   for (const record of records) {
-    await putDraftRecord(record);
+    const existing = await getDraftRecordById(record.id);
+    if (!existing || record.updatedAt > existing.updatedAt) {
+      await putDraftRecord(record);
+    }
   }
   for (const key of storageKeys) {
     localStorage.removeItem(key);
