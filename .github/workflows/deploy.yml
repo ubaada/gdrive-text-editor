@@ -1,0 +1,83 @@
+name: Build and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: personal-gcp-project1
+  REGION: australia-southeast1
+  REPOSITORY: drive-text-editor
+  SERVICE: drive-text-editor
+  IMAGE: drive-text-editor
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Generate browser configuration
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_PICKER_API_KEY: ${{ secrets.GOOGLE_PICKER_API_KEY }}
+          GOOGLE_PROJECT_NUMBER: ${{ secrets.GOOGLE_PROJECT_NUMBER }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          config = {
+              "clientId": os.environ["GOOGLE_CLIENT_ID"],
+              "apiKey": os.environ["GOOGLE_PICKER_API_KEY"],
+              "appId": os.environ["GOOGLE_PROJECT_NUMBER"],
+          }
+
+          Path("public/config.js").write_text(
+              "window.APP_CONFIG = " + json.dumps(config) + ";\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Install Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Configure Docker authentication
+        run: |
+          gcloud auth configure-docker \
+            "${REGION}-docker.pkg.dev" \
+            --quiet
+
+      - name: Build and push image
+        env:
+          IMAGE_URI: australia-southeast1-docker.pkg.dev/personal-gcp-project1/drive-text-editor/drive-text-editor:${{ github.sha }}
+        run: |
+          docker build --tag "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v3
+        with:
+          service: drive-text-editor
+          region: australia-southeast1
+          image: australia-southeast1-docker.pkg.dev/personal-gcp-project1/drive-text-editor/drive-text-editor:${{ github.sha }}
+          flags: >-
+            --no-allow-unauthenticated
+            --min-instances=0
+            --max-instances=1
+            --cpu=1
+            --memory=256Mi
