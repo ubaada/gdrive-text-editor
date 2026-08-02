@@ -86,16 +86,15 @@ button:disabled {
 .tabs-bar {
   display: flex;
   min-height: 34px;
+  overflow-x: auto;
+  overflow-y: hidden;
   border-bottom: 1px solid var(--ink);
   background: var(--background);
 }
 
 #tabs {
   display: flex;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
+  flex: 0 0 auto;
 }
 
 #newTabButton {
@@ -494,11 +493,6 @@ footer > span {
 
 .setting-label {
   font-weight: 700;
-}
-
-.settings-note {
-  color: var(--dim);
-  font-size: var(--ui-small-font-size);
 }
 
 .segmented-toggle {

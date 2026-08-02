@@ -1059,7 +1059,7 @@ function createExplorerRow(item, depth) {
   if (isFolder) {
     marker.textContent = item.expanded ? "[-]" : "[+]";
   } else {
-    marker.textContent = "[ ]";
+    marker.textContent = "";
   }
   const name = document.createElement("span");
   name.className = "explorer-name";

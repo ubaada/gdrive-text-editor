@@ -23,6 +23,8 @@ test("inline file and folder creation uses the selected folder", async ({
     "notes.txt"
   );
   await expect.poll(() => drive.findByName("notes.txt")?.parents[0]).toBe(folder.id);
+  const createdFileRow = page.getByRole("treeitem", { name: /notes\.txt/ });
+  await expect(createdFileRow.locator(".explorer-marker")).toHaveText("");
 
   await page.locator("#explorerNewFolderButton").click();
   const folderInput = page.locator(".explorer-create-input");
