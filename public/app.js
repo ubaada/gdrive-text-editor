@@ -3,6 +3,9 @@ const { clientId, apiKey, appId } = window.APP_CONFIG;
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const THEME_STORAGE_KEY = "drive-edit-theme";
+const DRAFT_DATABASE_NAME = "drive-edit-recovery";
+const DRAFT_STORE_NAME = "drafts";
+const DRAFT_SAVE_DELAY = 500;
 const THEMES = {
   dark: [
     {
@@ -115,6 +118,7 @@ let tabs = [];
 let activeTabId = null;
 let nextTabId = 1;
 let nextUntitledNumber = 1;
+let draftDatabasePromise = null;
 
 const newButton = document.getElementById("newButton");
 const openButton = document.getElementById("openButton");
@@ -127,6 +131,9 @@ const cursorPosition = document.getElementById("cursorPosition");
 const documentStats = document.getElementById("documentStats");
 const settingsDialog = document.getElementById("settingsDialog");
 const closeSettingsButton = document.getElementById("closeSettingsButton");
+const recoveryDialog = document.getElementById("recoveryDialog");
+const closeRecoveryButton = document.getElementById("closeRecoveryButton");
+const recoveryList = document.getElementById("recoveryList");
 const darkModeToggle = document.getElementById("darkModeToggle");
 const followSystemToggle = document.getElementById("followSystemToggle");
 const darkThemeSelect = document.getElementById("darkThemeSelect");
@@ -279,6 +286,194 @@ systemTheme.addEventListener("change", () => {
   }
 });
 
+closeRecoveryButton.addEventListener("click", () => recoveryDialog.close());
+
+function getDraftDatabase() {
+  if (!draftDatabasePromise) {
+    draftDatabasePromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(DRAFT_DATABASE_NAME, 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore(DRAFT_STORE_NAME, { keyPath: "id" });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  return draftDatabasePromise;
+}
+
+async function putDraftRecord(record) {
+  const database = await getDraftDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(DRAFT_STORE_NAME, "readwrite");
+    transaction.objectStore(DRAFT_STORE_NAME).put(record);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+}
+
+async function deleteDraftRecord(draftId) {
+  const database = await getDraftDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(DRAFT_STORE_NAME, "readwrite");
+    transaction.objectStore(DRAFT_STORE_NAME).delete(draftId);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+}
+
+async function getDraftRecords() {
+  const database = await getDraftDatabase();
+  return new Promise((resolve, reject) => {
+    const request = database
+      .transaction(DRAFT_STORE_NAME, "readonly")
+      .objectStore(DRAFT_STORE_NAME)
+      .getAll();
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function reportDraftFailure(error) {
+  console.error(error);
+  setStatus("LOCAL RECOVERY FAILED");
+}
+
+function queueDraftOperation(tab, operation) {
+  tab.draftWritePromise = tab.draftWritePromise
+    .catch(() => {})
+    .then(operation)
+    .catch(reportDraftFailure);
+}
+
+function persistDraft(tab) {
+  tab.draftTimer = null;
+  if (!tab.dirty || tab.model.isDisposed()) {
+    return;
+  }
+
+  const record = {
+    id: tab.draftId,
+    name: tab.name,
+    content: tab.model.getValue(),
+    file: tab.file,
+    updatedAt: new Date().toISOString(),
+  };
+  queueDraftOperation(tab, () => putDraftRecord(record));
+}
+
+function scheduleDraftSave(tab, immediate = false) {
+  if (!tab.dirty) {
+    return;
+  }
+
+  clearTimeout(tab.draftTimer);
+  if (immediate) {
+    persistDraft(tab);
+  } else {
+    tab.draftTimer = setTimeout(() => persistDraft(tab), DRAFT_SAVE_DELAY);
+  }
+}
+
+function deleteDraftForTab(tab) {
+  clearTimeout(tab.draftTimer);
+  tab.draftTimer = null;
+  queueDraftOperation(tab, () => deleteDraftRecord(tab.draftId));
+}
+
+function syncDraftAfterSave(tab) {
+  if (tab.dirty) {
+    scheduleDraftSave(tab);
+  } else {
+    deleteDraftForTab(tab);
+  }
+}
+
+function removeRecoveryItem(item) {
+  item.remove();
+  if (!recoveryList.children.length) {
+    recoveryDialog.close();
+  }
+}
+
+function renderRecoveryDrafts(drafts) {
+  recoveryList.replaceChildren();
+
+  for (const draft of drafts) {
+    const item = document.createElement("div");
+    item.className = "recovery-item";
+    item.dataset.draftId = draft.id;
+
+    const details = document.createElement("div");
+    details.className = "recovery-details";
+    const name = document.createElement("span");
+    name.className = "recovery-name";
+    name.textContent = draft.name;
+    const time = document.createElement("span");
+    time.className = "recovery-time";
+    time.textContent = `BACKED UP ${new Date(draft.updatedAt).toLocaleString()}`;
+    details.append(name, time);
+
+    const restoreButton = document.createElement("button");
+    restoreButton.type = "button";
+    restoreButton.textContent = "RESTORE";
+    restoreButton.addEventListener("click", () => {
+      createTab({
+        name: draft.name,
+        content: draft.content,
+        file: draft.file,
+        dirty: true,
+        draftId: draft.id,
+      });
+      removeRecoveryItem(item);
+      setStatus("DRAFT RESTORED");
+    });
+
+    const discardButton = document.createElement("button");
+    discardButton.type = "button";
+    discardButton.textContent = "DISCARD";
+    discardButton.addEventListener("click", async () => {
+      try {
+        await deleteDraftRecord(draft.id);
+        removeRecoveryItem(item);
+      } catch (error) {
+        reportDraftFailure(error);
+      }
+    });
+
+    item.append(details, restoreButton, discardButton);
+    recoveryList.append(item);
+  }
+}
+
+async function showRecoveryDrafts() {
+  try {
+    const drafts = await getDraftRecords();
+    if (!drafts.length) {
+      return;
+    }
+
+    drafts.sort((first, second) =>
+      second.updatedAt.localeCompare(first.updatedAt)
+    );
+    renderRecoveryDrafts(drafts);
+    if (settingsDialog.open) {
+      settingsDialog.addEventListener(
+        "close",
+        () => recoveryDialog.showModal(),
+        { once: true }
+      );
+    } else {
+      recoveryDialog.showModal();
+    }
+  } catch (error) {
+    reportDraftFailure(error);
+  }
+}
+
 function setStatus(message) {
   status.textContent = message;
 }
@@ -314,7 +509,13 @@ function languageFromFilename(name) {
   return languages[extension] || "plaintext";
 }
 
-function createTab({ name, content = "", file = null, dirty = false }) {
+function createTab({
+  name,
+  content = "",
+  file = null,
+  dirty = false,
+  draftId = crypto.randomUUID(),
+}) {
   const tab = {
     id: nextTabId++,
     name,
@@ -322,6 +523,9 @@ function createTab({ name, content = "", file = null, dirty = false }) {
     dirty,
     saving: false,
     savePending: false,
+    draftId,
+    draftTimer: null,
+    draftWritePromise: Promise.resolve(),
     model: monaco.editor.createModel(content, languageFromFilename(name)),
   };
 
@@ -330,17 +534,17 @@ function createTab({ name, content = "", file = null, dirty = false }) {
       updateEditorStats();
     }
 
-    if (tab.dirty) {
-      return;
+    if (!tab.dirty) {
+      tab.dirty = true;
+      renderTabs();
+      updateActiveFileDisplay();
     }
-
-    tab.dirty = true;
-    renderTabs();
-    updateActiveFileDisplay();
+    scheduleDraftSave(tab);
   });
 
   tabs.push(tab);
   activateTab(tab.id);
+  scheduleDraftSave(tab);
   return tab;
 }
 
@@ -383,6 +587,7 @@ function closeTab(tabId) {
     return;
   }
 
+  deleteDraftForTab(tab);
   tabs.splice(index, 1);
   tab.model.dispose();
 
@@ -481,6 +686,15 @@ require(["vs/editor/editor.main"], () => {
   editor.onDidChangeCursorPosition(updateEditorStats);
   newButton.disabled = false;
   openButton.disabled = false;
+  showRecoveryDrafts();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    for (const tab of tabs) {
+      scheduleDraftSave(tab, true);
+    }
+  }
 });
 
 window.addEventListener("load", () => {
@@ -688,6 +902,7 @@ async function saveFile() {
 
     tab.file = { ...tab.file, ...(await response.json()) };
     tab.dirty = tab.model.getValue() !== content;
+    syncDraftAfterSave(tab);
     renderTabs();
     updateActiveFileDisplay();
     setStatus(tab.dirty ? "SAVED | NEW CHANGES PENDING" : "SAVED");
@@ -755,6 +970,7 @@ async function createDriveFile(folderId, tabId) {
     tab.file = await response.json();
     tab.name = tab.file.name;
     tab.dirty = tab.model.getValue() !== content;
+    syncDraftAfterSave(tab);
     monaco.editor.setModelLanguage(tab.model, languageFromFilename(tab.name));
     renderTabs();
     updateActiveFileDisplay();

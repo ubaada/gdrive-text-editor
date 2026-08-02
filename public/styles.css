@@ -166,9 +166,9 @@ footer > span {
   border-left: 1px solid var(--dim);
 }
 
-#settingsDialog {
+#settingsDialog,
+#recoveryDialog {
   width: min(760px, calc(100vw - 32px));
-  height: min(480px, calc(100vh - 32px));
   padding: 0;
   border: 1px solid var(--ink);
   border-radius: 0;
@@ -177,7 +177,16 @@ footer > span {
   font: inherit;
 }
 
-#settingsDialog::backdrop {
+#settingsDialog {
+  height: min(480px, calc(100vh - 32px));
+}
+
+#recoveryDialog {
+  max-height: min(520px, calc(100vh - 32px));
+}
+
+#settingsDialog::backdrop,
+#recoveryDialog::backdrop {
   background: rgba(70, 70, 70, 0.72);
 }
 
@@ -199,7 +208,8 @@ footer > span {
   letter-spacing: 0.12em;
 }
 
-#closeSettingsButton {
+#closeSettingsButton,
+#closeRecoveryButton {
   width: 42px;
   padding: 0;
   border-right: 0;
@@ -208,7 +218,9 @@ footer > span {
 }
 
 #closeSettingsButton:hover,
-#closeSettingsButton:focus-visible {
+#closeSettingsButton:focus-visible,
+#closeRecoveryButton:hover,
+#closeRecoveryButton:focus-visible {
   background: var(--ink);
   color: var(--background);
 }
@@ -352,6 +364,57 @@ select:disabled {
   opacity: 0.65;
 }
 
+.recovery-panel {
+  overflow-y: auto;
+  max-height: calc(100vh - 76px);
+  padding: 18px;
+  background: var(--panel);
+}
+
+.recovery-panel > p {
+  margin: 0 0 16px;
+  color: var(--dim);
+}
+
+.recovery-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  border: 1px solid var(--dim);
+  border-bottom: 0;
+}
+
+.recovery-item:last-child {
+  border-bottom: 1px solid var(--dim);
+}
+
+.recovery-details {
+  min-width: 0;
+  padding: 10px;
+}
+
+.recovery-name,
+.recovery-time {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recovery-name {
+  font-weight: 700;
+}
+
+.recovery-time {
+  margin-top: 4px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.recovery-item button {
+  border-left: 1px solid var(--dim);
+  border-right: 0;
+}
+
 @media (max-width: 600px) {
   body {
     font-size: 12px;
@@ -384,5 +447,18 @@ select:disabled {
 
   .segmented-toggle {
     min-width: 0;
+  }
+
+  .recovery-item {
+    grid-template-columns: 1fr 74px;
+  }
+
+  .recovery-details {
+    grid-row: span 2;
+  }
+
+  .recovery-item button {
+    min-height: 38px;
+    padding: 0 6px;
   }
 }
