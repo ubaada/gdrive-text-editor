@@ -11,8 +11,7 @@ test("reload reuses prior Drive consent without forcing the consent prompt", asy
 
   await page.reload();
   await expect(page.locator(".monaco-editor")).toBeVisible();
-  await expect(page.locator("#recoveryDialog")).toBeVisible();
-  await page.locator("#closeRecoveryButton").click();
+  await expect(page.locator("#recoveryDialog")).toBeHidden();
   await page.locator("#explorerRefreshButton").click();
   await expect(page.locator("#status")).toHaveText("EXPLORER UPDATED");
   expect(await auth.lastPrompt()).toBe("");

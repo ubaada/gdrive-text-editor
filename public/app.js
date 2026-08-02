@@ -719,7 +719,14 @@ function renderRecoveryDrafts(drafts) {
 async function showRecoveryDrafts() {
   try {
     await importEmergencyDrafts();
-    const drafts = await getDraftRecords();
+    const drafts = [];
+    for (const draft of await getDraftRecords()) {
+      if (!draft.file && draft.content === "") {
+        await deleteDraftRecord(draft.id);
+      } else {
+        drafts.push(draft);
+      }
+    }
     if (!drafts.length) {
       return;
     }
@@ -875,12 +882,17 @@ function createTab({
       return;
     }
 
-    if (!tab.dirty) {
-      tab.dirty = true;
+    const dirty = tab.file ? true : tab.model.getValue().length > 0;
+    if (tab.dirty !== dirty) {
+      tab.dirty = dirty;
       renderTabs();
       updateActiveFileDisplay();
     }
-    scheduleDraftSave(tab);
+    if (tab.dirty) {
+      scheduleDraftSave(tab);
+    } else {
+      deleteDraftForTab(tab);
+    }
   });
 
   tabs.push(tab);
@@ -892,7 +904,6 @@ function createTab({
 function createUntitledTab() {
   createTab({
     name: `Untitled ${nextUntitledNumber++}`,
-    dirty: true,
   });
   setStatus("NEW BUFFER");
 }
