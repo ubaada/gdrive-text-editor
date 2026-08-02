@@ -6,6 +6,22 @@ const THEME_STORAGE_KEY = "drive-edit-theme";
 const DRAFT_DATABASE_NAME = "drive-edit-recovery";
 const DRAFT_STORE_NAME = "drafts";
 const DRAFT_SAVE_DELAY = 500;
+const TEXT_APPLICATION_MIME_TYPES = new Set([
+  "application/ecmascript",
+  "application/javascript",
+  "application/json",
+  "application/ld+json",
+  "application/sql",
+  "application/toml",
+  "application/x-empty",
+  "application/x-httpd-php",
+  "application/x-javascript",
+  "application/x-sh",
+  "application/x-shellscript",
+  "application/x-yaml",
+  "application/xml",
+  "application/yaml",
+]);
 const THEMES = {
   dark: [
     {
@@ -509,6 +525,70 @@ function languageFromFilename(name) {
   return languages[extension] || "plaintext";
 }
 
+function isSupportedTextMimeType(mimeType) {
+  const normalized = (mimeType || "application/octet-stream")
+    .split(";", 1)[0]
+    .toLowerCase();
+
+  return (
+    normalized.startsWith("text/") ||
+    normalized === "application/octet-stream" ||
+    normalized.endsWith("+json") ||
+    normalized.endsWith("+xml") ||
+    TEXT_APPLICATION_MIME_TYPES.has(normalized)
+  );
+}
+
+function decodeUtf8Text(bytes) {
+  const hasUtf8Bom =
+    bytes.length >= 3 &&
+    bytes[0] === 0xef &&
+    bytes[1] === 0xbb &&
+    bytes[2] === 0xbf;
+  const hasUtf16Or32Bom =
+    (bytes.length >= 2 &&
+      ((bytes[0] === 0xff && bytes[1] === 0xfe) ||
+        (bytes[0] === 0xfe && bytes[1] === 0xff))) ||
+    (bytes.length >= 4 &&
+      bytes[0] === 0 &&
+      bytes[1] === 0 &&
+      bytes[2] === 0xfe &&
+      bytes[3] === 0xff);
+
+  if (hasUtf16Or32Bom) {
+    throw new Error("UNSUPPORTED TEXT ENCODING: ONLY UTF-8 IS SAFE TO EDIT");
+  }
+
+  let suspiciousControls = 0;
+  for (const byte of bytes) {
+    if (byte === 0) {
+      throw new Error("BINARY FILE BLOCKED");
+    }
+    if (byte < 0x20 && ![0x09, 0x0a, 0x0c, 0x0d].includes(byte)) {
+      suspiciousControls += 1;
+    }
+  }
+  if (suspiciousControls > Math.max(2, bytes.length * 0.01)) {
+    throw new Error("BINARY FILE BLOCKED");
+  }
+
+  try {
+    return {
+      content: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      hasUtf8Bom,
+    };
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("UNSUPPORTED TEXT ENCODING: ONLY UTF-8 IS SAFE TO EDIT");
+    }
+    throw error;
+  }
+}
+
+function contentForUpload(tab, content) {
+  return tab.file?.hasUtf8Bom ? `\ufeff${content}` : content;
+}
+
 function createTab({
   name,
   content = "",
@@ -840,15 +920,21 @@ async function openDriveFile(fileId) {
     if (file.mimeType.startsWith("application/vnd.google-apps.")) {
       throw new Error("Google workspace files are not plain text.");
     }
+    if (!isSupportedTextMimeType(file.mimeType)) {
+      throw new Error(`UNSUPPORTED FILE TYPE: ${file.mimeType}`);
+    }
 
     const contentResponse = await driveFetch(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
         file.id
       )}?alt=media`
     );
-    const content = await contentResponse.text();
+    const decoded = decodeUtf8Text(
+      new Uint8Array(await contentResponse.arrayBuffer())
+    );
+    file.hasUtf8Bom = decoded.hasUtf8Bom;
 
-    createTab({ name: file.name, content, file });
+    createTab({ name: file.name, content: decoded.content, file });
     setStatus("LOADED");
   } catch (error) {
     console.error(error);
@@ -896,7 +982,7 @@ async function saveFile() {
         headers: {
           "Content-Type": tab.file.mimeType || "text/plain; charset=utf-8",
         },
-        body: content,
+        body: contentForUpload(tab, content),
       }
     );
 
