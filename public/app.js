@@ -8,6 +8,7 @@ let pickerReady = false;
 let editor;
 let currentFile = null;
 
+const newButton = document.getElementById("newButton");
 const openButton = document.getElementById("openButton");
 const saveButton = document.getElementById("saveButton");
 const filename = document.getElementById("filename");
@@ -16,6 +17,50 @@ const status = document.getElementById("status");
 function setStatus(message) {
   status.textContent = message;
 }
+
+async function createFile() {
+  const name = prompt("Filename, including extension:");
+
+  if (!name?.trim()) {
+    return;
+  }
+
+  try {
+    setStatus("Creating…");
+
+    const response = await driveFetch(
+      "https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: name.trim(),
+          mimeType: "text/plain",
+        }),
+      }
+    );
+
+    currentFile = await response.json();
+
+    editor.setValue("");
+    monaco.editor.setModelLanguage(
+      editor.getModel(),
+      languageFromFilename(currentFile.name)
+    );
+
+    filename.textContent = currentFile.name;
+    saveButton.disabled = false;
+    setStatus("Created");
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message);
+  }
+}
+
+newButton.addEventListener("click", createFile);
+
 
 function languageFromFilename(name) {
   const extension = name.split(".").pop()?.toLowerCase();
