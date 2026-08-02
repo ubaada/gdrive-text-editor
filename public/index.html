@@ -14,6 +14,7 @@
 
 <body>
   <header>
+    <button id="explorerToggle" type="button" aria-controls="fileExplorer" aria-expanded="true">[=]</button>
     <span class="app-title">DRIVE.EDIT</span>
     <button id="newButton" disabled>[N] NEW</button>
     <button id="openButton" disabled>[O] OPEN</button>
@@ -21,8 +22,24 @@
     <button id="settingsButton">[G] SETTINGS</button>
   </header>
 
-  <nav id="tabs" aria-label="Open files" role="tablist"></nav>
-  <main id="editor"></main>
+  <div class="workspace">
+    <aside id="fileExplorer" aria-label="Google Drive file explorer">
+      <div class="explorer-title">FILE EXPLORER</div>
+      <div class="explorer-actions">
+        <button id="explorerNewFileButton" type="button" disabled>+ FILE</button>
+        <button id="explorerNewFolderButton" type="button" disabled>+ FOLDER</button>
+        <button id="explorerRefreshButton" type="button" disabled>REFRESH</button>
+      </div>
+      <div id="explorerTree" role="tree" aria-label="My Drive">
+        <div class="explorer-message">SELECT REFRESH TO CONNECT TO DRIVE</div>
+      </div>
+    </aside>
+
+    <section class="editor-pane">
+      <nav id="tabs" aria-label="Open files" role="tablist"></nav>
+      <main id="editor"></main>
+    </section>
+  </div>
   <footer>
     <span id="filename">NO FILE</span>
     <span id="status">READY</span>

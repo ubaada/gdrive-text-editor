@@ -2,6 +2,7 @@ const { clientId, apiKey, appId } = window.APP_CONFIG;
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+const EXPLORER_ROOT_ID = "root";
 const THEME_STORAGE_KEY = "drive-edit-theme";
 const DRAFT_DATABASE_NAME = "drive-edit-recovery";
 const DRAFT_STORE_NAME = "drafts";
@@ -129,18 +130,40 @@ const DEFAULT_THEME_PREFERENCES = {
 let tokenClient;
 let accessToken = null;
 let pickerReady = false;
-let pendingPickerRequest = null;
+let pendingAuthorizationRequest = null;
 let editor;
 let tabs = [];
 let activeTabId = null;
 let nextTabId = 1;
 let nextUntitledNumber = 1;
 let draftDatabasePromise = null;
+const openingDriveFileIds = new Set();
+const explorerRoot = {
+  id: EXPLORER_ROOT_ID,
+  name: "MY DRIVE",
+  mimeType: FOLDER_MIME_TYPE,
+  expanded: true,
+  loaded: false,
+  loading: false,
+  children: [],
+};
+let selectedExplorerFolderId = EXPLORER_ROOT_ID;
 
+const explorerToggle = document.getElementById("explorerToggle");
 const newButton = document.getElementById("newButton");
 const openButton = document.getElementById("openButton");
 const saveButton = document.getElementById("saveButton");
 const settingsButton = document.getElementById("settingsButton");
+const explorerNewFileButton = document.getElementById(
+  "explorerNewFileButton"
+);
+const explorerNewFolderButton = document.getElementById(
+  "explorerNewFolderButton"
+);
+const explorerRefreshButton = document.getElementById(
+  "explorerRefreshButton"
+);
+const explorerTree = document.getElementById("explorerTree");
 const tabsElement = document.getElementById("tabs");
 const filename = document.getElementById("filename");
 const status = document.getElementById("status");
@@ -426,6 +449,7 @@ function getDraftRecord(tab) {
     name: tab.name,
     content: tab.model.getValue(),
     file: tab.file,
+    parentFolderId: tab.parentFolderId,
     updatedAt: new Date().toISOString(),
   };
 }
@@ -512,6 +536,7 @@ function renderRecoveryDrafts(drafts) {
         content: draft.content,
         file: draft.file,
         dirty: true,
+        parentFolderId: draft.parentFolderId,
       });
       scheduleDraftSave(restoredTab, true);
       queueDraftOperation(restoredTab, () => deleteDraftRecord(draft.id));
@@ -667,6 +692,7 @@ function createTab({
   file = null,
   dirty = false,
   draftId = crypto.randomUUID(),
+  parentFolderId = null,
 }) {
   const tab = {
     id: nextTabId++,
@@ -675,6 +701,7 @@ function createTab({
     dirty,
     saving: false,
     savePending: false,
+    parentFolderId,
     draftId,
     draftTimer: null,
     draftWritePromise: Promise.resolve(),
@@ -700,10 +727,11 @@ function createTab({
   return tab;
 }
 
-function createUntitledTab() {
+function createUntitledTab(parentFolderId = null) {
   createTab({
     name: `Untitled ${nextUntitledNumber++}`,
     dirty: true,
+    parentFolderId,
   });
   setStatus("NEW BUFFER");
 }
@@ -811,6 +839,274 @@ function updateEditorStats() {
   documentStats.textContent = `${tab.model.getLineCount()} LINES | ${words} WORDS | ${characters} CHARS | ${bytes} BYTES`;
 }
 
+function findExplorerFolder(folderId, folder = explorerRoot) {
+  if (folder.id === folderId) {
+    return folder;
+  }
+
+  for (const child of folder.children) {
+    if (child.mimeType !== FOLDER_MIME_TYPE) {
+      continue;
+    }
+    const match = findExplorerFolder(folderId, child);
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
+function isExplorerFileSupported(file) {
+  return (
+    !file.mimeType.startsWith("application/vnd.google-apps.") &&
+    isSupportedTextMimeType(file.mimeType)
+  );
+}
+
+function createExplorerRow(item, depth) {
+  const isFolder = item.mimeType === FOLDER_MIME_TYPE;
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "explorer-row";
+  row.style.paddingLeft = `${8 + depth * 16}px`;
+  row.setAttribute("role", "treeitem");
+  row.title = item.name;
+
+  const marker = document.createElement("span");
+  marker.className = "explorer-marker";
+  marker.textContent = isFolder ? (item.expanded ? "[-]" : "[+]") : "[ ]";
+  const name = document.createElement("span");
+  name.className = "explorer-name";
+  name.textContent = item.name;
+  row.append(marker, name);
+
+  if (isFolder) {
+    row.setAttribute("aria-expanded", String(item.expanded));
+    row.classList.toggle("selected", item.id === selectedExplorerFolderId);
+    row.addEventListener("click", () => selectExplorerFolder(item));
+  } else {
+    const supported = isExplorerFileSupported(item);
+    row.classList.toggle("unsupported", !supported);
+    if (supported) {
+      row.addEventListener("click", () =>
+        requestDriveAccess(() => openDriveFile(item.id))
+      );
+    } else {
+      row.title = `${item.name} is not a supported UTF-8 text file`;
+      row.setAttribute("aria-disabled", "true");
+      row.addEventListener("click", () =>
+        setStatus(`UNSUPPORTED FILE TYPE: ${item.mimeType}`)
+      );
+    }
+  }
+
+  return row;
+}
+
+function appendExplorerFolder(folder, depth) {
+  explorerTree.append(createExplorerRow(folder, depth));
+  if (!folder.expanded) {
+    return;
+  }
+
+  if (folder.loading) {
+    const loading = document.createElement("div");
+    loading.className = "explorer-message";
+    loading.style.paddingLeft = `${24 + depth * 16}px`;
+    loading.textContent = "LOADING...";
+    explorerTree.append(loading);
+    return;
+  }
+
+  if (!folder.loaded) {
+    const message = document.createElement("div");
+    message.className = "explorer-message";
+    message.style.paddingLeft = `${24 + depth * 16}px`;
+    message.textContent = accessToken
+      ? "SELECT FOLDER TO LOAD"
+      : "SELECT REFRESH TO CONNECT TO DRIVE";
+    explorerTree.append(message);
+    return;
+  }
+
+  if (!folder.children.length) {
+    const empty = document.createElement("div");
+    empty.className = "explorer-message";
+    empty.style.paddingLeft = `${24 + depth * 16}px`;
+    empty.textContent = "EMPTY FOLDER";
+    explorerTree.append(empty);
+    return;
+  }
+
+  for (const child of folder.children) {
+    if (child.mimeType === FOLDER_MIME_TYPE) {
+      appendExplorerFolder(child, depth + 1);
+    } else {
+      explorerTree.append(createExplorerRow(child, depth + 1));
+    }
+  }
+}
+
+function renderExplorerTree() {
+  explorerTree.replaceChildren();
+  appendExplorerFolder(explorerRoot, 0);
+}
+
+async function listDriveFolder(folderId) {
+  const files = [];
+  let pageToken = null;
+
+  do {
+    const parameters = new URLSearchParams({
+      q: `'${folderId}' in parents and trashed = false`,
+      orderBy: "folder,name_natural",
+      pageSize: "1000",
+      fields:
+        "nextPageToken,files(id,name,mimeType,parents,version,modifiedTime)",
+      includeItemsFromAllDrives: "true",
+      supportsAllDrives: "true",
+    });
+    if (pageToken) {
+      parameters.set("pageToken", pageToken);
+    }
+
+    const response = await driveFetch(
+      `https://www.googleapis.com/drive/v3/files?${parameters}`
+    );
+    const page = await response.json();
+    files.push(...(page.files || []));
+    pageToken = page.nextPageToken || null;
+  } while (pageToken);
+
+  files.sort((first, second) => {
+    const firstIsFolder = first.mimeType === FOLDER_MIME_TYPE;
+    const secondIsFolder = second.mimeType === FOLDER_MIME_TYPE;
+    if (firstIsFolder !== secondIsFolder) {
+      return firstIsFolder ? -1 : 1;
+    }
+    return first.name.localeCompare(second.name);
+  });
+
+  return files.map((file) =>
+    file.mimeType === FOLDER_MIME_TYPE
+      ? {
+          ...file,
+          expanded: false,
+          loaded: false,
+          loading: false,
+          children: [],
+        }
+      : file
+  );
+}
+
+async function loadExplorerFolder(folder, force = false) {
+  if (folder.loading || (folder.loaded && !force)) {
+    return;
+  }
+
+  folder.loading = true;
+  folder.expanded = true;
+  renderExplorerTree();
+  try {
+    folder.children = await listDriveFolder(folder.id);
+    folder.loaded = true;
+    if (!findExplorerFolder(selectedExplorerFolderId)) {
+      selectedExplorerFolderId = folder.id;
+    }
+    setStatus("EXPLORER UPDATED");
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message);
+  } finally {
+    folder.loading = false;
+    renderExplorerTree();
+  }
+}
+
+function selectExplorerFolder(folder) {
+  selectedExplorerFolderId = folder.id;
+  if (!accessToken) {
+    renderExplorerTree();
+    requestDriveAccess(() => loadExplorerFolder(folder));
+    return;
+  }
+
+  if (folder.loaded) {
+    folder.expanded = !folder.expanded;
+    renderExplorerTree();
+  } else {
+    loadExplorerFolder(folder);
+  }
+}
+
+function refreshExplorerFolder(folderId = selectedExplorerFolderId) {
+  const folder = findExplorerFolder(folderId) || explorerRoot;
+  return loadExplorerFolder(folder, true);
+}
+
+function refreshExplorer() {
+  requestDriveAccess(() => refreshExplorerFolder());
+}
+
+function createExplorerFile() {
+  const parent = findExplorerFolder(selectedExplorerFolderId) || explorerRoot;
+  selectedExplorerFolderId = parent.id;
+  createUntitledTab(parent.id);
+  setStatus("NEW BUFFER IN SELECTED DRIVE FOLDER");
+}
+
+function isDriveDestinationUnavailable(error) {
+  return (
+    error.status === 404 ||
+    (error.status === 403 && error.reason === "insufficientFilePermissions")
+  );
+}
+
+async function createExplorerFolder() {
+  const parent = findExplorerFolder(selectedExplorerFolderId) || explorerRoot;
+  selectedExplorerFolderId = parent.id;
+  renderExplorerTree();
+  const name = prompt("Folder name:");
+  if (!name?.trim()) {
+    return;
+  }
+
+  try {
+    setStatus("CREATING FOLDER");
+    await driveFetch(
+      "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name,mimeType,parents",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          mimeType: FOLDER_MIME_TYPE,
+          parents: [parent.id],
+        }),
+      }
+    );
+    await loadExplorerFolder(parent, true);
+    setStatus("FOLDER CREATED");
+  } catch (error) {
+    console.error(error);
+    if (isDriveDestinationUnavailable(error)) {
+      selectedExplorerFolderId = EXPLORER_ROOT_ID;
+      renderExplorerTree();
+      setStatus("DESTINATION UNAVAILABLE: SELECTED MY DRIVE");
+    } else {
+      setStatus(error.message);
+    }
+  }
+}
+
+function requestExplorerFolderCreation() {
+  requestDriveAccess(createExplorerFolder);
+}
+
+renderExplorerTree();
+
 require.config({
   paths: {
     vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs",
@@ -835,6 +1131,7 @@ require(["vs/editor/editor.main"], () => {
   editor.onDidChangeCursorPosition(updateEditorStats);
   newButton.disabled = false;
   openButton.disabled = false;
+  explorerNewFileButton.disabled = false;
   createUntitledTab();
   showRecoveryDrafts();
 });
@@ -858,31 +1155,27 @@ window.addEventListener("load", () => {
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: clientId,
     scope: DRIVE_SCOPE,
+    error_callback: (error) => {
+      const request = pendingAuthorizationRequest;
+      pendingAuthorizationRequest = null;
+      request?.onError?.();
+      setStatus(`AUTH FAILED: ${error.type || "POPUP ERROR"}`);
+    },
     callback: (response) => {
+      const request = pendingAuthorizationRequest;
+      pendingAuthorizationRequest = null;
       if (response.error) {
-        const failedRequest = pendingPickerRequest;
-        pendingPickerRequest = null;
-        if (failedRequest?.tabId) {
-          const tab = tabs.find(
-            (candidate) => candidate.id === failedRequest.tabId
-          );
-          if (tab) {
-            tab.savePending = false;
-            updateSaveButton();
-          }
-        }
+        request?.onError?.();
         setStatus(`AUTH FAILED: ${response.error}`);
         return;
       }
 
       accessToken = response.access_token;
-      const request = pendingPickerRequest;
-      pendingPickerRequest = null;
-      if (request) {
-        showPicker(request.mode, request.tabId);
-      }
+      request?.run();
     },
   });
+  explorerNewFolderButton.disabled = false;
+  explorerRefreshButton.disabled = false;
 });
 
 window.addEventListener("beforeunload", (event) => {
@@ -893,9 +1186,19 @@ window.addEventListener("beforeunload", (event) => {
   }
 });
 
-newButton.addEventListener("click", createUntitledTab);
+explorerToggle.addEventListener("click", () => {
+  const collapsed = document.body.classList.toggle("explorer-collapsed");
+  explorerToggle.setAttribute("aria-expanded", String(!collapsed));
+});
+newButton.addEventListener("click", () => createUntitledTab());
 openButton.addEventListener("click", () => requestPicker("file"));
 saveButton.addEventListener("click", saveFile);
+explorerNewFileButton.addEventListener("click", createExplorerFile);
+explorerNewFolderButton.addEventListener(
+  "click",
+  requestExplorerFolderCreation
+);
+explorerRefreshButton.addEventListener("click", refreshExplorer);
 
 document.addEventListener("keydown", (event) => {
   if (!(event.ctrlKey || event.metaKey)) {
@@ -921,17 +1224,34 @@ function requestPicker(mode, tabId = null) {
     return false;
   }
 
-  if (!accessToken) {
-    if (pendingPickerRequest) {
-      setStatus("AUTHORIZATION ALREADY IN PROGRESS");
-      return false;
+  return requestDriveAccess(
+    () => showPicker(mode, tabId),
+    () => {
+      if (!tabId) {
+        return;
+      }
+      const tab = tabs.find((candidate) => candidate.id === tabId);
+      if (tab) {
+        tab.savePending = false;
+        updateSaveButton();
+      }
     }
-    pendingPickerRequest = { mode, tabId };
-    tokenClient.requestAccessToken({ prompt: "consent" });
+  );
+}
+
+function requestDriveAccess(run, onError = null) {
+  if (accessToken) {
+    run();
     return true;
   }
 
-  showPicker(mode, tabId);
+  if (pendingAuthorizationRequest) {
+    setStatus("AUTHORIZATION ALREADY IN PROGRESS");
+    return false;
+  }
+
+  pendingAuthorizationRequest = { run, onError };
+  tokenClient.requestAccessToken({ prompt: "consent" });
   return true;
 }
 
@@ -984,7 +1304,12 @@ async function openDriveFile(fileId) {
     setStatus("ALREADY OPEN");
     return;
   }
+  if (openingDriveFileIds.has(fileId)) {
+    setStatus("FILE IS ALREADY LOADING");
+    return;
+  }
 
+  openingDriveFileIds.add(fileId);
   try {
     let stableFile = null;
     let stableContent = null;
@@ -993,7 +1318,7 @@ async function openDriveFile(fileId) {
       const metadataResponse = await driveFetch(
         `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
           fileId
-        )}?fields=id,name,mimeType,parents,version,modifiedTime`
+        )}?supportsAllDrives=true&fields=id,name,mimeType,parents,version,modifiedTime`
       );
       const file = await metadataResponse.json();
 
@@ -1007,7 +1332,7 @@ async function openDriveFile(fileId) {
       const contentResponse = await driveFetch(
         `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
           file.id
-        )}?alt=media`
+        )}?alt=media&supportsAllDrives=true`
       );
       const decoded = decodeUtf8Text(
         new Uint8Array(await contentResponse.arrayBuffer())
@@ -1015,7 +1340,7 @@ async function openDriveFile(fileId) {
       const confirmationResponse = await driveFetch(
         `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
           file.id
-        )}?fields=version,modifiedTime`
+        )}?supportsAllDrives=true&fields=version,modifiedTime`
       );
       const confirmation = await confirmationResponse.json();
 
@@ -1043,6 +1368,8 @@ async function openDriveFile(fileId) {
   } catch (error) {
     console.error(error);
     setStatus(error.message);
+  } finally {
+    openingDriveFileIds.delete(fileId);
   }
 }
 
@@ -1054,13 +1381,48 @@ async function saveFile() {
 
   if (!tab.file) {
     tab.savePending = true;
-    if (!requestPicker("folder", tab.id)) {
+    const requested = tab.parentFolderId
+      ? requestDriveAccess(
+          () => createDriveFile(tab.parentFolderId, tab.id),
+          () => {
+            tab.savePending = false;
+            updateSaveButton();
+          }
+        )
+      : requestPicker("folder", tab.id);
+    if (!requested) {
       tab.savePending = false;
     }
     updateSaveButton();
     return;
   }
 
+  if (!accessToken) {
+    tab.savePending = true;
+    const clearPending = () => {
+      tab.savePending = false;
+      updateSaveButton();
+    };
+    const requested = requestDriveAccess(
+      () => {
+        clearPending();
+        if (tabs.includes(tab) && !tab.saving) {
+          saveExistingDriveFile(tab);
+        }
+      },
+      clearPending
+    );
+    if (!requested) {
+      clearPending();
+    }
+    updateSaveButton();
+    return;
+  }
+
+  return saveExistingDriveFile(tab);
+}
+
+async function saveExistingDriveFile(tab) {
   const content = tab.model.getValue();
   try {
     tab.saving = true;
@@ -1069,7 +1431,7 @@ async function saveFile() {
     const metadataResponse = await driveFetch(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
         tab.file.id
-      )}?fields=version,modifiedTime`
+      )}?supportsAllDrives=true&fields=version,modifiedTime`
     );
     const remoteFile = await metadataResponse.json();
     if (tab.file.version && remoteFile.version !== tab.file.version) {
@@ -1080,7 +1442,7 @@ async function saveFile() {
     const response = await driveFetch(
       `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
         tab.file.id
-      )}?uploadType=media&fields=id,name,mimeType,parents,version,modifiedTime`,
+      )}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,parents,version,modifiedTime`,
       {
         method: "PATCH",
         headers: {
@@ -1147,7 +1509,7 @@ async function createDriveFile(folderId, tabId) {
     ].join("\r\n");
 
     const response = await driveFetch(
-      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,parents,version,modifiedTime",
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,parents,version,modifiedTime",
       {
         method: "POST",
         headers: {
@@ -1157,7 +1519,9 @@ async function createDriveFile(folderId, tabId) {
       }
     );
 
+    const explorerParentId = tab.parentFolderId;
     tab.file = await response.json();
+    tab.parentFolderId = null;
     tab.name = tab.file.name;
     tab.dirty = tab.model.getValue() !== content;
     syncDraftAfterSave(tab);
@@ -1165,9 +1529,18 @@ async function createDriveFile(folderId, tabId) {
     renderTabs();
     updateActiveFileDisplay();
     setStatus(tab.dirty ? "SAVED | NEW CHANGES PENDING" : "SAVED");
+    if (explorerParentId) {
+      refreshExplorerFolder(explorerParentId);
+    }
   } catch (error) {
     console.error(error);
-    setStatus(error.message);
+    if (tab.parentFolderId && isDriveDestinationUnavailable(error)) {
+      tab.parentFolderId = null;
+      scheduleDraftSave(tab);
+      setStatus("DESTINATION UNAVAILABLE: CHOOSE A FOLDER ON NEXT SAVE");
+    } else {
+      setStatus(error.message);
+    }
   } finally {
     tab.saving = false;
     updateSaveButton();
@@ -1189,7 +1562,15 @@ async function driveFetch(url, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(await response.text());
+    const body = await response.text();
+    const error = new Error(body);
+    error.status = response.status;
+    try {
+      error.reason = JSON.parse(body).error?.errors?.[0]?.reason;
+    } catch {
+      // Non-JSON API errors do not include a structured Drive reason.
+    }
+    throw error;
   }
 
   return response;
