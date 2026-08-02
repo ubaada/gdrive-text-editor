@@ -6,6 +6,7 @@ const THEME_STORAGE_KEY = "drive-edit-theme";
 const DRAFT_DATABASE_NAME = "drive-edit-recovery";
 const DRAFT_STORE_NAME = "drafts";
 const DRAFT_SAVE_DELAY = 500;
+const EMERGENCY_DRAFT_STORAGE_PREFIX = "drive-edit-emergency-drafts:";
 const TEXT_APPLICATION_MIME_TYPES = new Set([
   "application/ecmascript",
   "application/javascript",
@@ -155,6 +156,7 @@ const followSystemToggle = document.getElementById("followSystemToggle");
 const darkThemeSelect = document.getElementById("darkThemeSelect");
 const lightThemeSelect = document.getElementById("lightThemeSelect");
 const textEncoder = new TextEncoder();
+const emergencyDraftStorageKey = `${EMERGENCY_DRAFT_STORAGE_PREFIX}${crypto.randomUUID()}`;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 let themePreferences = loadThemePreferences();
 
@@ -371,14 +373,7 @@ function persistDraft(tab) {
     return;
   }
 
-  const record = {
-    id: tab.draftId,
-    name: tab.name,
-    content: tab.model.getValue(),
-    file: tab.file,
-    updatedAt: new Date().toISOString(),
-  };
-  queueDraftOperation(tab, () => putDraftRecord(record));
+  queueDraftOperation(tab, () => putDraftRecord(getDraftRecord(tab)));
 }
 
 function scheduleDraftSave(tab, immediate = false) {
@@ -405,6 +400,64 @@ function syncDraftAfterSave(tab) {
     scheduleDraftSave(tab);
   } else {
     deleteDraftForTab(tab);
+  }
+}
+
+function getDraftRecord(tab) {
+  return {
+    id: tab.draftId,
+    name: tab.name,
+    content: tab.model.getValue(),
+    file: tab.file,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function saveEmergencyDrafts() {
+  try {
+    const records = tabs
+      .filter((tab) => tab.dirty && !tab.model.isDisposed())
+      .map(getDraftRecord);
+    if (records.length) {
+      localStorage.setItem(emergencyDraftStorageKey, JSON.stringify(records));
+    } else {
+      localStorage.removeItem(emergencyDraftStorageKey);
+    }
+  } catch (error) {
+    console.warn("Could not write emergency recovery drafts.", error);
+  }
+}
+
+async function importEmergencyDrafts() {
+  const storageKeys = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key?.startsWith(EMERGENCY_DRAFT_STORAGE_PREFIX)) {
+      storageKeys.push(key);
+    }
+  }
+
+  const records = [];
+  for (const key of storageKeys) {
+    try {
+      const storedRecords = JSON.parse(localStorage.getItem(key));
+      if (Array.isArray(storedRecords)) {
+        records.push(...storedRecords);
+      }
+    } catch (error) {
+      console.warn("Ignored an invalid emergency recovery draft.", error);
+      localStorage.removeItem(key);
+    }
+  }
+
+  records.sort((first, second) =>
+    first.updatedAt.localeCompare(second.updatedAt)
+  );
+  for (const record of records) {
+    await putDraftRecord(record);
+  }
+  for (const key of storageKeys) {
+    localStorage.removeItem(key);
   }
 }
 
@@ -437,13 +490,14 @@ function renderRecoveryDrafts(drafts) {
     restoreButton.type = "button";
     restoreButton.textContent = "RESTORE";
     restoreButton.addEventListener("click", () => {
-      createTab({
+      const restoredTab = createTab({
         name: draft.name,
         content: draft.content,
         file: draft.file,
         dirty: true,
-        draftId: draft.id,
       });
+      scheduleDraftSave(restoredTab, true);
+      queueDraftOperation(restoredTab, () => deleteDraftRecord(draft.id));
       removeRecoveryItem(item);
       setStatus("DRAFT RESTORED");
     });
@@ -467,6 +521,7 @@ function renderRecoveryDrafts(drafts) {
 
 async function showRecoveryDrafts() {
   try {
+    await importEmergencyDrafts();
     const drafts = await getDraftRecords();
     if (!drafts.length) {
       return;
@@ -771,6 +826,7 @@ require(["vs/editor/editor.main"], () => {
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
+    saveEmergencyDrafts();
     for (const tab of tabs) {
       scheduleDraftSave(tab, true);
     }
@@ -816,6 +872,7 @@ window.addEventListener("load", () => {
 
 window.addEventListener("beforeunload", (event) => {
   if (tabs.some((tab) => tab.dirty)) {
+    saveEmergencyDrafts();
     event.preventDefault();
     event.returnValue = true;
   }
