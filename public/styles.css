@@ -1,0 +1,46 @@
+html,
+body {
+  height: 100%;
+  margin: 0;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: #1e1e1e;
+  color: #ddd;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 12px;
+  border-bottom: 1px solid #444;
+}
+
+button {
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+#filename {
+  font-weight: 600;
+}
+
+#status {
+  margin-left: auto;
+  color: #aaa;
+}
+
+#editor {
+  flex: 1;
+  min-height: 0;
+}
