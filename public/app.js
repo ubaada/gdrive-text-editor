@@ -850,6 +850,10 @@ function requestPicker(mode, tabId = null) {
   }
 
   if (!accessToken) {
+    if (pendingPickerRequest) {
+      setStatus("AUTHORIZATION ALREADY IN PROGRESS");
+      return false;
+    }
     pendingPickerRequest = { mode, tabId };
     tokenClient.requestAccessToken({ prompt: "consent" });
     return true;
