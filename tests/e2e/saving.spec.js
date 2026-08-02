@@ -18,6 +18,7 @@ test("saving an untitled tab names it inline and preserves its content", async (
 
   const input = page.locator(".explorer-create-input");
   await expect(input).toHaveValue(".txt");
+  await expect(input).toBeFocused();
   await input.fill("draft.txt");
   await input.press("Enter");
 
