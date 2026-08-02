@@ -287,6 +287,11 @@ function getActiveTab() {
   return tabs.find((tab) => tab.id === activeTabId) || null;
 }
 
+function updateSaveButton() {
+  const tab = getActiveTab();
+  saveButton.disabled = !tab || tab.saving || tab.savePending;
+}
+
 function languageFromFilename(name) {
   const extension = name.split(".").pop()?.toLowerCase();
   const languages = {
@@ -315,6 +320,8 @@ function createTab({ name, content = "", file = null, dirty = false }) {
     name,
     file,
     dirty,
+    saving: false,
+    savePending: false,
     model: monaco.editor.createModel(content, languageFromFilename(name)),
   };
 
@@ -354,7 +361,7 @@ function activateTab(tabId) {
   activeTabId = tab.id;
   editor.setModel(tab.model);
   editor.updateOptions({ readOnly: false });
-  saveButton.disabled = false;
+  updateSaveButton();
   renderTabs();
   updateActiveFileDisplay();
   editor.focus();
@@ -367,6 +374,11 @@ function closeTab(tabId) {
   }
 
   const tab = tabs[index];
+  if (tab.saving) {
+    setStatus("SAVE IN PROGRESS");
+    return;
+  }
+
   if (tab.dirty && !confirm(`Close ${tab.name} without saving?`)) {
     return;
   }
@@ -382,7 +394,7 @@ function closeTab(tabId) {
       activeTabId = null;
       editor.setModel(null);
       editor.updateOptions({ readOnly: true });
-      saveButton.disabled = true;
+      updateSaveButton();
       renderTabs();
       updateActiveFileDisplay();
     }
@@ -483,6 +495,17 @@ window.addEventListener("load", () => {
     scope: DRIVE_SCOPE,
     callback: (response) => {
       if (response.error) {
+        const failedRequest = pendingPickerRequest;
+        pendingPickerRequest = null;
+        if (failedRequest?.tabId) {
+          const tab = tabs.find(
+            (candidate) => candidate.id === failedRequest.tabId
+          );
+          if (tab) {
+            tab.savePending = false;
+            updateSaveButton();
+          }
+        }
         setStatus(`AUTH FAILED: ${response.error}`);
         return;
       }
@@ -528,16 +551,17 @@ document.addEventListener("keydown", (event) => {
 function requestPicker(mode, tabId = null) {
   if (!pickerReady) {
     setStatus("PICKER LOADING");
-    return;
+    return false;
   }
 
   if (!accessToken) {
     pendingPickerRequest = { mode, tabId };
     tokenClient.requestAccessToken({ prompt: "consent" });
-    return;
+    return true;
   }
 
   showPicker(mode, tabId);
+  return true;
 }
 
 function showPicker(mode, tabId) {
@@ -564,6 +588,13 @@ function showPicker(mode, tabId) {
 
 async function handlePickerResult(data, mode, tabId) {
   if (data.action !== google.picker.Action.PICKED) {
+    if (mode === "folder" && data.action === google.picker.Action.CANCEL) {
+      const tab = tabs.find((candidate) => candidate.id === tabId);
+      if (tab) {
+        tab.savePending = false;
+        updateSaveButton();
+      }
+    }
     return;
   }
 
@@ -613,17 +644,23 @@ async function openDriveFile(fileId) {
 
 async function saveFile() {
   const tab = getActiveTab();
-  if (!tab) {
+  if (!tab || tab.saving || tab.savePending) {
     return;
   }
 
   if (!tab.file) {
-    requestPicker("folder", tab.id);
+    tab.savePending = true;
+    if (!requestPicker("folder", tab.id)) {
+      tab.savePending = false;
+    }
+    updateSaveButton();
     return;
   }
 
+  const content = tab.model.getValue();
   try {
-    saveButton.disabled = true;
+    tab.saving = true;
+    updateSaveButton();
     setStatus("SAVING");
     await driveFetch(
       `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
@@ -634,36 +671,44 @@ async function saveFile() {
         headers: {
           "Content-Type": tab.file.mimeType || "text/plain; charset=utf-8",
         },
-        body: tab.model.getValue(),
+        body: content,
       }
     );
 
-    tab.dirty = false;
+    tab.dirty = tab.model.getValue() !== content;
     renderTabs();
     updateActiveFileDisplay();
-    setStatus("SAVED");
+    setStatus(tab.dirty ? "SAVED | NEW CHANGES PENDING" : "SAVED");
   } catch (error) {
     console.error(error);
     setStatus(error.message);
   } finally {
-    saveButton.disabled = false;
+    tab.saving = false;
+    updateSaveButton();
   }
 }
 
 async function createDriveFile(folderId, tabId) {
   const tab = tabs.find((candidate) => candidate.id === tabId);
+  if (tab) {
+    tab.savePending = false;
+  }
   if (!tab || tab.file) {
+    updateSaveButton();
     return;
   }
 
   const name = prompt("Filename, including extension:", tab.name);
   if (!name?.trim()) {
     setStatus("SAVE CANCELLED");
+    updateSaveButton();
     return;
   }
 
+  const content = tab.model.getValue();
   try {
-    saveButton.disabled = true;
+    tab.saving = true;
+    updateSaveButton();
     setStatus("CREATING");
     const boundary = `drive_editor_${Date.now()}`;
     const metadata = {
@@ -679,7 +724,7 @@ async function createDriveFile(folderId, tabId) {
       `--${boundary}`,
       "Content-Type: text/plain; charset=UTF-8",
       "",
-      tab.model.getValue(),
+      content,
       `--${boundary}--`,
       "",
     ].join("\r\n");
@@ -697,16 +742,17 @@ async function createDriveFile(folderId, tabId) {
 
     tab.file = await response.json();
     tab.name = tab.file.name;
-    tab.dirty = false;
+    tab.dirty = tab.model.getValue() !== content;
     monaco.editor.setModelLanguage(tab.model, languageFromFilename(tab.name));
     renderTabs();
     updateActiveFileDisplay();
-    setStatus("SAVED");
+    setStatus(tab.dirty ? "SAVED | NEW CHANGES PENDING" : "SAVED");
   } catch (error) {
     console.error(error);
     setStatus(error.message);
   } finally {
-    saveButton.disabled = false;
+    tab.saving = false;
+    updateSaveButton();
   }
 }
 
