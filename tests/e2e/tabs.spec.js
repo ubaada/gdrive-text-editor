@@ -14,6 +14,23 @@ test("empty tabs close without prompting and never enter recovery", async ({
   await expect(page.locator("#openButton")).toHaveCount(0);
   await expect(page.locator("#newTabButton")).toHaveText("+");
 
+  const selectedTab = page.locator('.tab[aria-selected="true"]');
+  const selectedColors = await selectedTab.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { background: style.backgroundColor, color: style.color };
+  });
+  for (const control of [selectedTab.locator(".tab-select"), selectedTab.locator(".tab-close")]) {
+    await control.hover();
+    await expect
+      .poll(() =>
+        control.evaluate((element) => {
+          const style = getComputedStyle(element);
+          return { background: style.backgroundColor, color: style.color };
+        })
+      )
+      .toEqual(selectedColors);
+  }
+
   await page.locator("#newTabButton").click();
   await expect(page.locator(".tab")).toHaveCount(2);
   const tabBarEdges = await page.evaluate(() => ({

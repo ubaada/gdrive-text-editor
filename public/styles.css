@@ -307,12 +307,6 @@ body.explorer-collapsed #fileExplorer {
   color: var(--background);
 }
 
-.tab[aria-selected="true"] .tab-select:hover,
-.tab[aria-selected="true"] .tab-close:hover {
-  background: var(--background);
-  color: var(--ink);
-}
-
 #status {
   margin-left: auto;
   padding: 0 12px;
