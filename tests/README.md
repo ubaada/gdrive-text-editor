@@ -7,6 +7,7 @@ make requests to Google.
 ```sh
 npm install
 npm test
+npm run screenshots
 ```
 
 Use `npm run test:headed` to watch the tests or `npm run test:ui` for

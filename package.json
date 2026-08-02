@@ -4,7 +4,8 @@
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "test:ui": "playwright test --ui"
+    "test:ui": "playwright test --ui",
+    "screenshots": "UPDATE_SCREENSHOTS=1 playwright test screenshots.spec.js --workers=1"
   },
   "devDependencies": {
     "@playwright/test": "^1.54.2",
