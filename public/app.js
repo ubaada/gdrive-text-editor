@@ -8,6 +8,7 @@ const GOOGLE_CONSENT_STORAGE_KEY = "drive-edit-google-consent";
 const DRAFT_DATABASE_NAME = "drive-edit-recovery";
 const DRAFT_STORE_NAME = "drafts";
 const DRAFT_SAVE_DELAY = 500;
+const REVISION_PAGE_SIZE = 1000;
 const EMERGENCY_DRAFT_STORAGE_PREFIX = "drive-edit-emergency-drafts:";
 const LOADING_FRAMES = [
   "⠋",
@@ -191,6 +192,8 @@ const explorerRoot = {
   children: [],
 };
 let selectedExplorerFolderId = EXPLORER_ROOT_ID;
+let sidebarMode = "files";
+let confirmationResolver = null;
 
 const explorerToggle = document.getElementById("explorerToggle");
 const newTabButton = document.getElementById("newTabButton");
@@ -205,8 +208,23 @@ const explorerNewFolderButton = document.getElementById(
 const explorerRefreshButton = document.getElementById(
   "explorerRefreshButton"
 );
+const filesModeButton = document.getElementById("filesModeButton");
+const historyModeButton = document.getElementById("historyModeButton");
+const explorerPanel = document.getElementById("explorerPanel");
+const revisionHistoryPanel = document.getElementById("revisionHistoryPanel");
+const revisionHistoryFilename = document.getElementById(
+  "revisionHistoryFilename"
+);
+const revisionHistoryRefresh = document.getElementById(
+  "revisionHistoryRefresh"
+);
+const revisionHistoryList = document.getElementById("revisionHistoryList");
 const explorerTree = document.getElementById("explorerTree");
 const editorElement = document.getElementById("editor");
+const revisionPreviewBar = document.getElementById("revisionPreviewBar");
+const revisionPreviewLabel = document.getElementById("revisionPreviewLabel");
+const backToLatestButton = document.getElementById("backToLatestButton");
+const restoreRevisionButton = document.getElementById("restoreRevisionButton");
 const editorState = document.getElementById("editorState");
 const editorStateSymbol = document.getElementById("editorStateSymbol");
 const editorStateMessage = document.getElementById("editorStateMessage");
@@ -220,6 +238,18 @@ const closeSettingsButton = document.getElementById("closeSettingsButton");
 const recoveryDialog = document.getElementById("recoveryDialog");
 const closeRecoveryButton = document.getElementById("closeRecoveryButton");
 const recoveryList = document.getElementById("recoveryList");
+const confirmationDialog = document.getElementById("confirmationDialog");
+const confirmationTitle = document.getElementById("confirmationTitle");
+const confirmationMessage = document.getElementById("confirmationMessage");
+const closeConfirmationButton = document.getElementById(
+  "closeConfirmationButton"
+);
+const cancelConfirmationButton = document.getElementById(
+  "cancelConfirmationButton"
+);
+const acceptConfirmationButton = document.getElementById(
+  "acceptConfirmationButton"
+);
 const darkModeToggle = document.getElementById("darkModeToggle");
 const followSystemToggle = document.getElementById("followSystemToggle");
 const darkThemeSelect = document.getElementById("darkThemeSelect");
@@ -485,6 +515,43 @@ systemTheme.addEventListener("change", () => {
 });
 
 closeRecoveryButton.addEventListener("click", () => recoveryDialog.close());
+
+function finishConfirmation(accepted) {
+  if (!confirmationResolver) {
+    return;
+  }
+  const resolve = confirmationResolver;
+  confirmationResolver = null;
+  confirmationDialog.close();
+  resolve(accepted);
+}
+
+function confirmAction({ title, message, acceptLabel = "YES" }) {
+  if (confirmationResolver) {
+    return Promise.resolve(false);
+  }
+  confirmationTitle.textContent = title;
+  confirmationMessage.textContent = message;
+  acceptConfirmationButton.textContent = acceptLabel;
+  confirmationDialog.showModal();
+  return new Promise((resolve) => {
+    confirmationResolver = resolve;
+  });
+}
+
+closeConfirmationButton.addEventListener("click", () =>
+  finishConfirmation(false)
+);
+cancelConfirmationButton.addEventListener("click", () =>
+  finishConfirmation(false)
+);
+acceptConfirmationButton.addEventListener("click", () =>
+  finishConfirmation(true)
+);
+confirmationDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  finishConfirmation(false);
+});
 
 function getDraftDatabase() {
   if (!draftDatabasePromise) {
@@ -760,7 +827,14 @@ function getActiveTab() {
 function updateSaveButton() {
   const tab = getActiveTab();
   saveButton.disabled =
-    !tab || tab.saving || tab.savePending || tab.loading || tab.loadError;
+    !tab ||
+    tab.saving ||
+    tab.savePending ||
+    tab.loading ||
+    tab.loadError ||
+    tab.revisionPreview ||
+    tab.restoring ||
+    tab.revisionHistory.previewingId;
 }
 
 function languageFromFilename(name) {
@@ -858,6 +932,459 @@ function hasDriveContentChanged(localFile, remoteFile) {
   );
 }
 
+function createRevisionHistoryState() {
+  return {
+    revisions: [],
+    nextPageToken: null,
+    loaded: false,
+    loading: false,
+    error: null,
+    generation: 0,
+    previewGeneration: 0,
+    previewingId: null,
+  };
+}
+
+function getDisplayedModel(tab = getActiveTab()) {
+  return tab?.revisionPreview?.model || tab?.model || null;
+}
+
+function canShowRevisionHistory(tab) {
+  return Boolean(tab?.file && !tab.loading && !tab.loadError);
+}
+
+function updateHistoryControls() {
+  const tab = getActiveTab();
+  historyModeButton.disabled = !canShowRevisionHistory(tab);
+  revisionHistoryRefresh.disabled = !canShowRevisionHistory(tab);
+  if (sidebarMode === "history" && !canShowRevisionHistory(tab)) {
+    setSidebarMode("files");
+  }
+}
+
+function updateSidebarModeTabStops() {
+  filesModeButton.tabIndex = sidebarMode === "files" ? 0 : -1;
+  historyModeButton.tabIndex = sidebarMode === "history" ? 0 : -1;
+}
+
+function setSidebarMode(mode) {
+  const tab = getActiveTab();
+  if (mode === "history" && !canShowRevisionHistory(tab)) {
+    return;
+  }
+
+  sidebarMode = mode;
+  filesModeButton.setAttribute("aria-selected", String(mode === "files"));
+  historyModeButton.setAttribute("aria-selected", String(mode === "history"));
+  updateSidebarModeTabStops();
+  explorerPanel.hidden = mode !== "files";
+  revisionHistoryPanel.hidden = mode !== "history";
+  if (mode === "history") {
+    document.body.classList.remove("explorer-collapsed");
+    explorerToggle.setAttribute("aria-expanded", "true");
+    renderRevisionHistory();
+    requestRevisionHistory(tab);
+  }
+}
+
+function requestRevisionHistory(tab, { append = false, force = false } = {}) {
+  if (
+    !tabs.includes(tab) ||
+    !canShowRevisionHistory(tab) ||
+    tab.revisionHistory.loading
+  ) {
+    return;
+  }
+  if (!append && tab.revisionHistory.loaded && !force) {
+    renderRevisionHistory();
+    return;
+  }
+  requestDriveAccess(() => {
+    if (tabs.includes(tab)) {
+      loadRevisionHistory(tab, { append });
+    }
+  });
+}
+
+async function loadRevisionHistory(tab, { append = false } = {}) {
+  if (!tabs.includes(tab)) {
+    return;
+  }
+  const history = tab.revisionHistory;
+  const generation = ++history.generation;
+  history.loading = true;
+  history.error = null;
+  if (!append) {
+    history.revisions = [];
+    history.nextPageToken = null;
+  }
+  renderRevisionHistory();
+
+  try {
+    const parameters = new URLSearchParams({
+      pageSize: String(REVISION_PAGE_SIZE),
+      fields:
+        "nextPageToken,revisions(id,modifiedTime,size,md5Checksum,keepForever,originalFilename,lastModifyingUser(displayName))",
+    });
+    if (append && history.nextPageToken) {
+      parameters.set("pageToken", history.nextPageToken);
+    }
+    const response = await driveFetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        tab.file.id
+      )}/revisions?${parameters}`
+    );
+    const page = await response.json();
+    if (!tabs.includes(tab) || generation !== history.generation) {
+      return;
+    }
+    history.revisions = append
+      ? [...history.revisions, ...(page.revisions || [])]
+      : page.revisions || [];
+    history.revisions.sort((first, second) =>
+      second.modifiedTime.localeCompare(first.modifiedTime)
+    );
+    history.nextPageToken = page.nextPageToken || null;
+    history.loaded = true;
+  } catch (error) {
+    console.error(error);
+    if (tabs.includes(tab) && generation === history.generation) {
+      history.error = error.message;
+      setStatus("REVISION HISTORY FAILED");
+    }
+  } finally {
+    if (tabs.includes(tab) && generation === history.generation) {
+      history.loading = false;
+      renderRevisionHistory();
+    }
+  }
+}
+
+function revisionIsCurrent(tab, revision, index) {
+  if (tab.file.headRevisionId) {
+    return revision.id === tab.file.headRevisionId;
+  }
+  return index === 0 && revision.md5Checksum === tab.file.md5Checksum;
+}
+
+function formatRevisionTime(value) {
+  return new Date(value).toLocaleString();
+}
+
+function createRevisionItem(tab, revision, index) {
+  const current = revisionIsCurrent(tab, revision, index);
+  const item = document.createElement("div");
+  item.className = `revision-item${current ? " current" : ""}`;
+  item.dataset.revisionId = revision.id;
+
+  const details = document.createElement("div");
+  details.className = "revision-details";
+  const name = document.createElement("span");
+  name.className = "revision-name";
+  name.textContent = current ? "CURRENT REVISION" : formatRevisionTime(revision.modifiedTime);
+  const metadata = document.createElement("span");
+  metadata.className = "revision-meta";
+  const labels = [];
+  if (current) {
+    labels.push(formatRevisionTime(revision.modifiedTime));
+  }
+  if (revision.size) {
+    labels.push(formatByteSize(Number(revision.size)));
+  }
+  if (revision.lastModifyingUser?.displayName) {
+    labels.push(revision.lastModifyingUser.displayName);
+  }
+  if (revision.keepForever) {
+    labels.push("KEPT FOREVER");
+  }
+  metadata.textContent = labels.join(" | ");
+  details.append(name, metadata);
+  item.append(details);
+
+  if (!current) {
+    const previewButton = document.createElement("button");
+    previewButton.type = "button";
+    const viewing = tab.revisionPreview?.revision.id === revision.id;
+    previewButton.textContent = viewing ? "VIEWING" : "PREVIEW";
+    previewButton.disabled = viewing || Boolean(tab.revisionHistory.previewingId);
+    previewButton.addEventListener("click", () => previewRevision(tab, revision));
+    item.append(previewButton);
+  }
+  return item;
+}
+
+function renderRevisionHistory() {
+  const tab = getActiveTab();
+  revisionHistoryList.replaceChildren();
+  revisionHistoryFilename.textContent = tab?.name || "NO FILE";
+  if (!canShowRevisionHistory(tab)) {
+    const message = document.createElement("div");
+    message.className = "explorer-message";
+    message.textContent = "OPEN A DRIVE FILE TO VIEW HISTORY";
+    revisionHistoryList.append(message);
+    return;
+  }
+
+  if (tab.dirty) {
+    const unsaved = document.createElement("div");
+    unsaved.className = "revision-item unsaved";
+    unsaved.innerHTML =
+      '<div class="revision-details"><span class="revision-name">UNSAVED REVISION</span><span class="revision-meta">LOCAL WORKING COPY | PRESERVED WHILE BROWSING</span></div>';
+    revisionHistoryList.append(unsaved);
+  }
+
+  tab.revisionHistory.revisions.forEach((revision, index) => {
+    revisionHistoryList.append(createRevisionItem(tab, revision, index));
+  });
+
+  if (tab.revisionHistory.loading) {
+    const message = document.createElement("div");
+    message.className = "explorer-message";
+    message.textContent = "LOADING REVISION HISTORY";
+    revisionHistoryList.append(message);
+  } else if (tab.revisionHistory.error) {
+    const message = document.createElement("div");
+    message.className = "explorer-message";
+    message.textContent = tab.revisionHistory.error;
+    revisionHistoryList.append(message);
+  } else if (tab.revisionHistory.loaded && !tab.revisionHistory.revisions.length) {
+    const message = document.createElement("div");
+    message.className = "explorer-message";
+    message.textContent = "NO REVISIONS AVAILABLE";
+    revisionHistoryList.append(message);
+  }
+
+  if (tab.revisionHistory.nextPageToken && !tab.revisionHistory.loading) {
+    const loadMore = document.createElement("button");
+    loadMore.type = "button";
+    loadMore.className = "revision-load-more";
+    loadMore.textContent = "LOAD OLDER REVISIONS";
+    loadMore.addEventListener("click", () =>
+      requestRevisionHistory(tab, { append: true })
+    );
+    revisionHistoryList.append(loadMore);
+  }
+}
+
+async function downloadRevision(tab, revision) {
+  const response = await driveFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+      tab.file.id
+    )}/revisions/${encodeURIComponent(revision.id)}?alt=media`
+  );
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function keepRevisionForever(tab, revision) {
+  const response = await driveFetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+      tab.file.id
+    )}/revisions/${encodeURIComponent(revision.id)}?fields=id,keepForever`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keepForever: true }),
+    }
+  );
+  const updated = await response.json();
+  revision.keepForever = updated.keepForever;
+}
+
+async function previewRevision(tab, revision) {
+  const history = tab.revisionHistory;
+  if (
+    history.previewingId ||
+    tab.restoring ||
+    tab.saving ||
+    tab.savePending ||
+    tab.loading
+  ) {
+    return;
+  }
+  history.previewingId = revision.id;
+  const previewGeneration = ++history.previewGeneration;
+  updateSaveButton();
+  updateRevisionPreviewBar();
+  renderRevisionHistory();
+  setStatus("LOADING REVISION");
+  try {
+    let bytes;
+    try {
+      bytes = await downloadRevision(tab, revision);
+    } catch (error) {
+      if (
+        error.reason !== "download_restricted_for_revision" &&
+        error.reason !== "downloadRestrictedForRevision"
+      ) {
+        throw error;
+      }
+      const accepted = await confirmAction({
+        title: "KEEP REVISION FOREVER?",
+        message:
+          "DRIVE REQUIRES THIS REVISION TO BE KEPT FOREVER BEFORE IT CAN BE PREVIEWED.\n\nKEPT REVISIONS USE DRIVE STORAGE AND COUNT TOWARD THE 200-REVISION LIMIT.",
+        acceptLabel: "KEEP & PREVIEW",
+      });
+      if (!accepted) {
+        setStatus("REVISION PREVIEW CANCELLED");
+        return;
+      }
+      await keepRevisionForever(tab, revision);
+      bytes = await downloadRevision(tab, revision);
+    }
+
+    if (
+      !tabs.includes(tab) ||
+      previewGeneration !== history.previewGeneration
+    ) {
+      return;
+    }
+    const decoded = decodeUtf8Text(bytes);
+    const model = monaco.editor.createModel(
+      decoded.content,
+      languageFromFilename(tab.name)
+    );
+    const previousPreview = tab.revisionPreview;
+    tab.revisionPreview = { revision, bytes, decoded, model };
+    if (tab.id === activeTabId) {
+      editor.setModel(model);
+      editor.updateOptions({ readOnly: true });
+    }
+    previousPreview?.model.dispose();
+    renderTabs();
+    updateSaveButton();
+    updateActiveFileDisplay();
+    updateRevisionPreviewBar();
+    renderRevisionHistory();
+    setStatus("REVISION PREVIEW");
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message);
+  } finally {
+    if (previewGeneration === history.previewGeneration) {
+      history.previewingId = null;
+      updateSaveButton();
+      updateRevisionPreviewBar();
+      renderRevisionHistory();
+    }
+  }
+}
+
+function exitRevisionPreview(tab) {
+  const preview = tab?.revisionPreview;
+  if (!preview) {
+    return;
+  }
+  tab.revisionHistory.previewGeneration += 1;
+  tab.revisionHistory.previewingId = null;
+  if (tab.id === activeTabId) {
+    editor.setModel(tab.model);
+    editor.updateOptions({ readOnly: false });
+  }
+  tab.revisionPreview = null;
+  preview.model.dispose();
+  renderTabs();
+  updateSaveButton();
+  updateActiveFileDisplay();
+  updateRevisionPreviewBar();
+  renderRevisionHistory();
+  setStatus("BACK TO LATEST");
+}
+
+function updateRevisionPreviewBar() {
+  const tab = getActiveTab();
+  const preview = tab?.revisionPreview;
+  revisionPreviewBar.hidden = !preview;
+  if (!preview) {
+    return;
+  }
+  revisionPreviewLabel.textContent = `REVISION ${formatRevisionTime(
+    preview.revision.modifiedTime
+  )}`;
+  backToLatestButton.disabled = Boolean(tab.restoring);
+  restoreRevisionButton.disabled = Boolean(
+    tab.restoring || tab.revisionHistory.previewingId
+  );
+}
+
+async function restorePreviewedRevision(tab) {
+  const preview = tab?.revisionPreview;
+  if (
+    !preview ||
+    tab.restoring ||
+    tab.saving ||
+    tab.savePending ||
+    tab.revisionHistory.previewingId
+  ) {
+    return;
+  }
+  const unsavedWarning = tab.dirty
+    ? "\n\nYOUR UNSAVED REVISION WILL BE DISCARDED AFTER RESTORE SUCCEEDS."
+    : "";
+  const accepted = await confirmAction({
+    title: "RESTORE REVISION?",
+    message: `ARE YOU SURE YOU WANT TO RESTORE THIS REVISION?\n\nTHIS CREATES A NEW LATEST REVISION IN DRIVE.${unsavedWarning}`,
+    acceptLabel: "RESTORE",
+  });
+  if (!accepted || !tabs.includes(tab) || tab.revisionPreview !== preview) {
+    return;
+  }
+
+  tab.restoring = true;
+  updateSaveButton();
+  updateRevisionPreviewBar();
+  setStatus("RESTORING REVISION");
+  try {
+    const metadataResponse = await driveFetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        tab.file.id
+      )}?supportsAllDrives=true&fields=md5Checksum,version,modifiedTime`
+    );
+    const remoteFile = await metadataResponse.json();
+    if (hasDriveContentChanged(tab.file, remoteFile)) {
+      throw new Error("RESTORE BLOCKED: FILE CHANGED IN DRIVE");
+    }
+
+    const response = await driveFetch(
+      `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
+        tab.file.id
+      )}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,headRevisionId,version,modifiedTime`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": tab.file.mimeType || "text/plain; charset=utf-8",
+        },
+        body: preview.bytes,
+      }
+    );
+    const savedFile = await response.json();
+    tab.file = {
+      ...tab.file,
+      ...savedFile,
+      hasUtf8Bom: preview.decoded.hasUtf8Bom,
+    };
+    tab.suppressDirtyTracking = true;
+    try {
+      tab.model.setValue(preview.decoded.content);
+    } finally {
+      tab.suppressDirtyTracking = false;
+    }
+    tab.dirty = false;
+    syncDraftAfterSave(tab);
+    tab.revisionHistory = createRevisionHistoryState();
+    tab.restoring = false;
+    exitRevisionPreview(tab);
+    requestRevisionHistory(tab, { force: true });
+    setStatus("REVISION RESTORED");
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message);
+  } finally {
+    tab.restoring = false;
+    updateSaveButton();
+    updateRevisionPreviewBar();
+  }
+}
+
 function createTab({
   name,
   content = "",
@@ -879,6 +1406,9 @@ function createTab({
     draftId,
     draftTimer: null,
     draftWritePromise: Promise.resolve(),
+    revisionHistory: createRevisionHistoryState(),
+    revisionPreview: null,
+    restoring: false,
     model: monaco.editor.createModel(content, languageFromFilename(name)),
   };
 
@@ -896,6 +1426,7 @@ function createTab({
       tab.dirty = dirty;
       renderTabs();
       updateActiveFileDisplay();
+      renderRevisionHistory();
     }
     if (tab.dirty) {
       scheduleDraftSave(tab);
@@ -924,12 +1455,18 @@ function activateTab(tabId) {
   }
 
   activeTabId = tab.id;
-  editor.setModel(tab.model);
-  editor.updateOptions({ readOnly: false });
+  editor.setModel(getDisplayedModel(tab));
+  editor.updateOptions({ readOnly: Boolean(tab.revisionPreview) });
   updateSaveButton();
   renderTabs();
   updateActiveFileDisplay();
   updateEditorState();
+  updateHistoryControls();
+  updateRevisionPreviewBar();
+  renderRevisionHistory();
+  if (sidebarMode === "history") {
+    requestRevisionHistory(tab);
+  }
   if (!tab.loading && !tab.loadError) {
     editor.focus();
   }
@@ -942,7 +1479,7 @@ function closeTab(tabId) {
   }
 
   const tab = tabs[index];
-  if (tab.saving || tab.savePending || tab.loading) {
+  if (tab.saving || tab.savePending || tab.loading || tab.restoring) {
     setStatus(tab.loading ? "FILE LOAD IN PROGRESS" : "SAVE IN PROGRESS");
     return;
   }
@@ -953,6 +1490,7 @@ function closeTab(tabId) {
 
   deleteDraftForTab(tab);
   tabs.splice(index, 1);
+  tab.revisionPreview?.model.dispose();
   tab.model.dispose();
 
   if (activeTabId === tabId) {
@@ -975,6 +1513,7 @@ function renderTabs() {
   for (const tab of tabs) {
     const tabElement = document.createElement("div");
     tabElement.className = "tab";
+    tabElement.classList.toggle("revision-preview", Boolean(tab.revisionPreview));
     tabElement.setAttribute("role", "tab");
     tabElement.setAttribute("aria-selected", String(tab.id === activeTabId));
 
@@ -1000,7 +1539,9 @@ function renderTabs() {
 function updateActiveFileDisplay() {
   const tab = getActiveTab();
   filename.textContent = tab
-    ? `${tab.dirty ? "MODIFIED | " : ""}${tab.name}`
+    ? `${tab.revisionPreview ? "REVISION PREVIEW | " : ""}${
+        tab.dirty ? "MODIFIED | " : ""
+      }${tab.name}`
     : "NO FILE";
   updateEditorStats();
 }
@@ -1044,14 +1585,15 @@ function updateEditorStats() {
     return;
   }
 
-  const value = tab.model.getValue();
+  const model = getDisplayedModel(tab);
+  const value = model.getValue();
   const position = editor.getPosition() || { lineNumber: 1, column: 1 };
   const words = value.trim() ? value.trim().split(/\s+/u).length : 0;
   const characters = [...value].length;
   const bytes = textEncoder.encode(value).length;
 
   cursorPosition.textContent = `LN ${position.lineNumber}, COL ${position.column}`;
-  documentStats.textContent = `${tab.model.getLineCount()} LINES | ${words} WORDS | ${characters} CHARS | ${formatByteSize(bytes)}`;
+  documentStats.textContent = `${model.getLineCount()} LINES | ${words} WORDS | ${characters} CHARS | ${formatByteSize(bytes)}`;
 }
 
 function findExplorerFolder(folderId, folder = explorerRoot) {
@@ -1257,7 +1799,7 @@ async function listDriveFolder(folderId) {
       orderBy: "folder,name_natural",
       pageSize: "1000",
       fields:
-        "nextPageToken,files(id,name,mimeType,parents,md5Checksum,version,modifiedTime)",
+        "nextPageToken,files(id,name,mimeType,parents,md5Checksum,headRevisionId,version,modifiedTime)",
       includeItemsFromAllDrives: "true",
       supportsAllDrives: "true",
     });
@@ -1544,7 +2086,7 @@ async function createDriveTextFile(parentId, name, content) {
     "",
   ].join("\r\n");
   const response = await driveFetch(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,version,modifiedTime",
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,headRevisionId,version,modifiedTime",
     {
       method: "POST",
       headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
@@ -1596,6 +2138,7 @@ async function createExplorerItem(operation) {
       if (targetTab) {
         targetTab.savePending = false;
         targetTab.file = created;
+        targetTab.revisionHistory = createRevisionHistoryState();
         targetTab.name = created.name;
         targetTab.dirty = targetTab.model.getValue() !== content;
         syncDraftAfterSave(targetTab);
@@ -1606,6 +2149,9 @@ async function createExplorerItem(operation) {
         renderTabs();
         updateActiveFileDisplay();
         updateSaveButton();
+        if (targetTab.id === activeTabId) {
+          updateHistoryControls();
+        }
       } else {
         createTab({ name: created.name, content: "", file: created });
       }
@@ -1731,6 +2277,36 @@ explorerToggle.addEventListener("click", () => {
   const collapsed = document.body.classList.toggle("explorer-collapsed");
   explorerToggle.setAttribute("aria-expanded", String(!collapsed));
 });
+filesModeButton.addEventListener("click", () => setSidebarMode("files"));
+historyModeButton.addEventListener("click", () => setSidebarMode("history"));
+for (const button of [filesModeButton, historyModeButton]) {
+  button.addEventListener("keydown", (event) => {
+    let target = null;
+    if (event.key === "ArrowLeft" || event.key === "Home") {
+      target = filesModeButton;
+    } else if (event.key === "ArrowRight" || event.key === "End") {
+      target = historyModeButton;
+    }
+    if (!target || target.disabled) {
+      return;
+    }
+    event.preventDefault();
+    setSidebarMode(target === filesModeButton ? "files" : "history");
+    target.focus();
+  });
+}
+revisionHistoryRefresh.addEventListener("click", () => {
+  const tab = getActiveTab();
+  if (tab) {
+    requestRevisionHistory(tab, { force: true });
+  }
+});
+backToLatestButton.addEventListener("click", () =>
+  exitRevisionPreview(getActiveTab())
+);
+restoreRevisionButton.addEventListener("click", () =>
+  restorePreviewedRevision(getActiveTab())
+);
 newTabButton.addEventListener("click", () => createUntitledTab());
 saveButton.addEventListener("click", saveFile);
 explorerNewFileButton.addEventListener("click", () =>
@@ -1836,7 +2412,7 @@ async function loadDriveFile(tab) {
       const metadataResponse = await driveFetch(
         `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
           fileId
-        )}?supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,version,modifiedTime`
+        )}?supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,headRevisionId,version,modifiedTime`
       );
       const file = await metadataResponse.json();
 
@@ -1884,6 +2460,7 @@ async function loadDriveFile(tab) {
     tab.model.setValue(stableContent);
     tab.suppressDirtyTracking = false;
     tab.file = stableFile;
+    tab.revisionHistory = createRevisionHistoryState();
     tab.name = stableFile.name;
     tab.loading = false;
     tab.loadError = null;
@@ -1893,6 +2470,7 @@ async function loadDriveFile(tab) {
     updateSaveButton();
     if (tab.id === activeTabId) {
       updateEditorState();
+      updateHistoryControls();
       editor.focus();
     }
     setStatus("LOADED");
@@ -1905,6 +2483,7 @@ async function loadDriveFile(tab) {
       updateSaveButton();
       if (tab.id === activeTabId) {
         updateEditorState();
+        updateHistoryControls();
       }
     }
     setStatus(error.message);
@@ -1921,7 +2500,10 @@ async function saveFile() {
     tab.saving ||
     tab.savePending ||
     tab.loading ||
-    tab.loadError
+    tab.loadError ||
+    tab.revisionPreview ||
+    tab.restoring ||
+    tab.revisionHistory.previewingId
   ) {
     return;
   }
@@ -1976,7 +2558,7 @@ async function saveExistingDriveFile(tab) {
     const response = await driveFetch(
       `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
         tab.file.id
-      )}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,version,modifiedTime`,
+      )}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,headRevisionId,version,modifiedTime`,
       {
         method: "PATCH",
         headers: {
@@ -1987,11 +2569,15 @@ async function saveExistingDriveFile(tab) {
     );
 
     tab.file = { ...tab.file, ...(await response.json()) };
+    tab.revisionHistory = createRevisionHistoryState();
     tab.dirty = tab.model.getValue() !== content;
     syncDraftAfterSave(tab);
     renderTabs();
     updateActiveFileDisplay();
     setStatus(tab.dirty ? "SAVED | NEW CHANGES PENDING" : "SAVED");
+    if (sidebarMode === "history" && tab.id === activeTabId) {
+      requestRevisionHistory(tab, { force: true });
+    }
   } catch (error) {
     console.error(error);
     setStatus(error.message);

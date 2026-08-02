@@ -12,6 +12,7 @@ A browser-based, monochrome text editor for files stored in Google Drive.
 - Drive file explorer with inline file and folder creation
 - Monaco editor with tabs, loading states, and live file statistics
 - Local crash recovery and Drive version-conflict protection
+- Drive revision history with read-only previews and confirmed restoration
 - Persistent themes, UI fonts, and editor fonts
 
 ## Development

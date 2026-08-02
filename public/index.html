@@ -22,14 +22,26 @@
 
   <div class="workspace">
     <aside id="fileExplorer" aria-label="Google Drive file explorer">
-      <div class="explorer-title">FILE EXPLORER</div>
-      <div class="explorer-actions">
-        <button id="explorerNewFileButton" type="button" disabled>+ FILE</button>
-        <button id="explorerNewFolderButton" type="button" disabled>+ FOLDER</button>
-        <button id="explorerRefreshButton" type="button" disabled>REFRESH</button>
+      <div class="sidebar-modes" role="tablist" aria-label="Drive sidebar">
+        <button id="filesModeButton" type="button" role="tab" aria-selected="true" aria-controls="explorerPanel">FILES</button>
+        <button id="historyModeButton" type="button" role="tab" aria-selected="false" aria-controls="revisionHistoryPanel" tabindex="-1" disabled>HISTORY</button>
       </div>
-      <div id="explorerTree" role="tree" aria-label="My Drive">
-        <div class="explorer-message">SELECT REFRESH TO CONNECT TO DRIVE</div>
+      <div id="explorerPanel" class="sidebar-panel" role="tabpanel" aria-labelledby="filesModeButton">
+        <div class="explorer-actions">
+          <button id="explorerNewFileButton" type="button" disabled>+ FILE</button>
+          <button id="explorerNewFolderButton" type="button" disabled>+ FOLDER</button>
+          <button id="explorerRefreshButton" type="button" disabled>REFRESH</button>
+        </div>
+        <div id="explorerTree" role="tree" aria-label="My Drive">
+          <div class="explorer-message">SELECT REFRESH TO CONNECT TO DRIVE</div>
+        </div>
+      </div>
+      <div id="revisionHistoryPanel" class="sidebar-panel" role="tabpanel" aria-labelledby="historyModeButton" hidden>
+        <div class="revision-history-heading">
+          <span id="revisionHistoryFilename">NO FILE</span>
+          <button id="revisionHistoryRefresh" type="button">REFRESH</button>
+        </div>
+        <div id="revisionHistoryList" aria-live="polite"></div>
       </div>
     </aside>
 
@@ -39,6 +51,11 @@
         <button id="newTabButton" type="button" disabled aria-label="New tab" title="New tab">+</button>
       </div>
       <div class="editor-surface">
+        <div id="revisionPreviewBar" hidden>
+          <span id="revisionPreviewLabel">REVISION PREVIEW</span>
+          <button id="backToLatestButton" type="button">BACK TO LATEST</button>
+          <button id="restoreRevisionButton" type="button">RESTORE</button>
+        </div>
         <main id="editor"></main>
         <div id="editorState" class="editor-state" role="status" aria-live="polite" aria-atomic="true" hidden>
           <span id="editorStateSymbol" class="editor-state-symbol" aria-hidden="true"></span>
@@ -123,6 +140,20 @@
     <div class="recovery-panel">
       <p>UNSAVED WORK WAS FOUND IN THIS BROWSER.</p>
       <div id="recoveryList"></div>
+    </div>
+  </dialog>
+
+  <dialog id="confirmationDialog" aria-labelledby="confirmationTitle">
+    <div class="settings-titlebar">
+      <h2 id="confirmationTitle">CONFIRM</h2>
+      <button id="closeConfirmationButton" type="button" aria-label="Cancel">X</button>
+    </div>
+    <div class="confirmation-panel">
+      <p id="confirmationMessage"></p>
+      <div class="confirmation-actions">
+        <button id="cancelConfirmationButton" type="button">NO</button>
+        <button id="acceptConfirmationButton" type="button">YES</button>
+      </div>
     </div>
   </dialog>
 

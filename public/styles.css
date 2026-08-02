@@ -37,6 +37,10 @@ body[data-theme-mode="light"] {
   color-scheme: light;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 header {
   display: flex;
   align-items: center;
@@ -137,14 +141,34 @@ body.explorer-collapsed #fileExplorer {
   color: var(--background);
 }
 
-.explorer-title {
+.sidebar-modes {
   display: flex;
   min-height: 33px;
   align-items: center;
-  padding: 0 10px;
   border-bottom: 1px solid var(--ink);
-  font-weight: 700;
+}
+
+.sidebar-modes button {
+  flex: 1;
+  padding: 0 8px;
+  border-right: 1px solid var(--ink);
   letter-spacing: 0.08em;
+}
+
+.sidebar-modes button:last-child {
+  border-right: 0;
+}
+
+.sidebar-modes button[aria-selected="true"] {
+  background: var(--ink);
+  color: var(--background);
+}
+
+.sidebar-panel {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
 }
 
 .explorer-actions {
@@ -220,6 +244,76 @@ body.explorer-collapsed #fileExplorer {
   line-height: 1.5;
 }
 
+.revision-history-heading {
+  display: flex;
+  min-height: 34px;
+  align-items: stretch;
+  border-bottom: 1px solid var(--dim);
+}
+
+#revisionHistoryFilename {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  overflow: hidden;
+  padding: 0 9px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#revisionHistoryRefresh {
+  padding: 0 8px;
+  border-right: 0;
+  border-left: 1px solid var(--dim);
+  font-size: var(--ui-small-font-size);
+}
+
+#revisionHistoryList {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.revision-item {
+  border-bottom: 1px solid var(--dim);
+}
+
+.revision-item.current,
+.revision-item.unsaved {
+  background: var(--panel);
+}
+
+.revision-details {
+  padding: 9px;
+}
+
+.revision-name,
+.revision-meta {
+  display: block;
+}
+
+.revision-name {
+  font-weight: 700;
+}
+
+.revision-meta {
+  margin-top: 4px;
+  color: var(--dim);
+  font-size: var(--ui-small-font-size);
+  line-height: 1.4;
+}
+
+.revision-item button,
+.revision-load-more {
+  width: 100%;
+  min-height: 32px;
+  border-top: 1px solid var(--dim);
+  border-right: 0;
+  font-size: var(--ui-small-font-size);
+}
+
 .explorer-create-row {
   display: flex;
   min-height: 31px;
@@ -278,6 +372,35 @@ body.explorer-collapsed #fileExplorer {
   color: var(--background);
 }
 
+.tab.revision-preview {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--ink) 0,
+    var(--ink) 6px,
+    var(--dim) 6px,
+    var(--dim) 8px
+  );
+  color: var(--background);
+}
+
+.tab.revision-preview[aria-selected="true"] {
+  box-shadow: inset 0 -3px 0 var(--background);
+}
+
+.tab.revision-preview .tab-select:hover,
+.tab.revision-preview .tab-select:focus-visible,
+.tab.revision-preview .tab-close:hover,
+.tab.revision-preview .tab-close:focus-visible {
+  background: transparent;
+  color: inherit;
+}
+
+.tab.revision-preview .tab-select:focus-visible,
+.tab.revision-preview .tab-close:focus-visible {
+  outline: 1px solid var(--background);
+  outline-offset: -3px;
+}
+
 .tab-select {
   flex: 1;
   overflow: hidden;
@@ -321,6 +444,34 @@ body.explorer-collapsed #fileExplorer {
   position: relative;
   flex: 1;
   min-height: 0;
+}
+
+#revisionPreviewBar {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  right: 16px;
+  display: flex;
+  min-height: 34px;
+  border: 1px solid var(--ink);
+  background: var(--panel);
+}
+
+#revisionPreviewLabel {
+  display: flex;
+  max-width: min(320px, 35vw);
+  align-items: center;
+  overflow: hidden;
+  padding: 0 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#revisionPreviewBar button {
+  padding: 0 9px;
+  border-right: 0;
+  border-left: 1px solid var(--ink);
+  font-size: var(--ui-small-font-size);
 }
 
 .editor-state {
@@ -370,7 +521,8 @@ footer > span {
 }
 
 #settingsDialog,
-#recoveryDialog {
+#recoveryDialog,
+#confirmationDialog {
   width: min(760px, calc(100vw - 32px));
   padding: 0;
   border: 1px solid var(--ink);
@@ -388,8 +540,13 @@ footer > span {
   max-height: min(520px, calc(100vh - 32px));
 }
 
+#confirmationDialog {
+  max-width: 520px;
+}
+
 #settingsDialog::backdrop,
-#recoveryDialog::backdrop {
+#recoveryDialog::backdrop,
+#confirmationDialog::backdrop {
   background: rgba(70, 70, 70, 0.72);
 }
 
@@ -412,7 +569,8 @@ footer > span {
 }
 
 #closeSettingsButton,
-#closeRecoveryButton {
+#closeRecoveryButton,
+#closeConfirmationButton {
   width: 42px;
   padding: 0;
   border-right: 0;
@@ -423,7 +581,9 @@ footer > span {
 #closeSettingsButton:hover,
 #closeSettingsButton:focus-visible,
 #closeRecoveryButton:hover,
-#closeRecoveryButton:focus-visible {
+#closeRecoveryButton:focus-visible,
+#closeConfirmationButton:hover,
+#closeConfirmationButton:focus-visible {
   background: var(--ink);
   color: var(--background);
 }
@@ -618,6 +778,33 @@ select:disabled {
   border-right: 0;
 }
 
+.confirmation-panel {
+  padding: 18px;
+}
+
+.confirmation-panel p {
+  margin: 0;
+  white-space: pre-line;
+}
+
+.confirmation-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+  border: 1px solid var(--ink);
+}
+
+.confirmation-actions button {
+  min-width: 90px;
+  min-height: 38px;
+  border-right: 0;
+  border-left: 1px solid var(--ink);
+}
+
+.confirmation-actions button:first-child {
+  border-left: 0;
+}
+
 @media (max-width: 600px) {
   .app-title {
     display: none;
@@ -639,6 +826,19 @@ select:disabled {
     bottom: 0;
     left: 0;
     width: min(280px, 88vw);
+  }
+
+  #revisionPreviewBar {
+    right: 8px;
+    left: 8px;
+  }
+
+  #revisionPreviewLabel {
+    display: none;
+  }
+
+  #revisionPreviewBar button {
+    flex: 1;
   }
 
   .settings-layout {

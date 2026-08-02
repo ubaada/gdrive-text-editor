@@ -32,10 +32,33 @@ function parseMultipart(request) {
 
 async function installDriveApi(page) {
   const files = new Map();
+  const revisions = new Map();
   const folderDelays = new Map();
   const fileDelays = new Map();
   const postUploadVersionDrifts = new Set();
+  const restrictedRevisionDownloads = new Set();
+  const uploadFailures = new Set();
   let nextId = 1;
+  let nextRevisionId = 1;
+
+  function addRevision(file, { keepForever = false } = {}) {
+    const revision = {
+      id: `revision-${nextRevisionId++}`,
+      content: file.content,
+      mimeType: file.mimeType,
+      modifiedTime: new Date(Date.now() + nextRevisionId * 1000).toISOString(),
+      size: String(Buffer.byteLength(file.content)),
+      md5Checksum: checksum(file.content),
+      keepForever,
+      originalFilename: file.name,
+      lastModifyingUser: { displayName: "Test User" },
+    };
+    const fileRevisions = revisions.get(file.id) || [];
+    fileRevisions.push(revision);
+    revisions.set(file.id, fileRevisions);
+    file.headRevisionId = revision.id;
+    return revision;
+  }
 
   function addFolder({ id = `folder-${nextId++}`, name, parentId = "root" }) {
     const folder = {
@@ -68,6 +91,7 @@ async function installDriveApi(page) {
       modifiedTime: new Date().toISOString(),
     };
     files.set(id, file);
+    addRevision(file);
     return file;
   }
 
@@ -75,7 +99,69 @@ async function installDriveApi(page) {
     const request = route.request();
     const url = new URL(request.url());
     const isUpload = url.pathname.startsWith("/upload/");
-    const id = url.pathname.split("/files/")[1];
+    const pathParts = url.pathname.split("/files/")[1]?.split("/") || [];
+    const id = pathParts[0];
+    const isRevisionRequest = pathParts[1] === "revisions";
+    const revisionId = pathParts[2];
+
+    if (request.method() === "GET" && isRevisionRequest && !revisionId) {
+      const fileRevisions = revisions.get(id) || [];
+      const pageSize = Number(url.searchParams.get("pageSize")) || 200;
+      const start = Number(url.searchParams.get("pageToken")) || 0;
+      const pageRevisions = fileRevisions.slice(start, start + pageSize).map(
+        ({ content, ...metadata }) => metadata
+      );
+      const nextPageToken =
+        start + pageSize < fileRevisions.length
+          ? String(start + pageSize)
+          : undefined;
+      return route.fulfill({
+        json: { revisions: pageRevisions, nextPageToken },
+      });
+    }
+
+    if (
+      request.method() === "GET" &&
+      isRevisionRequest &&
+      revisionId &&
+      url.searchParams.get("alt") === "media"
+    ) {
+      const revision = revisions
+        .get(id)
+        ?.find((candidate) => candidate.id === revisionId);
+      if (!revision) {
+        return route.fulfill({
+          status: 404,
+          json: { error: { message: "Revision not found" } },
+        });
+      }
+      if (
+        restrictedRevisionDownloads.has(id) &&
+        !revision.keepForever
+      ) {
+        return route.fulfill({
+          status: 403,
+          json: {
+            error: {
+              message: "This revision must be kept forever before download.",
+              errors: [{ reason: "download_restricted_for_revision" }],
+            },
+          },
+        });
+      }
+      return route.fulfill({ body: revision.content, contentType: revision.mimeType });
+    }
+
+    if (request.method() === "PATCH" && isRevisionRequest && revisionId) {
+      const revision = revisions
+        .get(id)
+        ?.find((candidate) => candidate.id === revisionId);
+      if (!revision) {
+        return route.fulfill({ status: 404, body: "Revision not found" });
+      }
+      revision.keepForever = request.postDataJSON().keepForever;
+      return route.fulfill({ json: { id: revision.id, keepForever: true } });
+    }
 
     if (request.method() === "GET" && !id) {
       const parentId = url.searchParams.get("q")?.match(/'([^']+)' in parents/)?.[1];
@@ -125,11 +211,18 @@ async function installDriveApi(page) {
     }
 
     if (request.method() === "PATCH" && isUpload) {
+      if (uploadFailures.delete(id)) {
+        return route.fulfill({
+          status: 500,
+          json: { error: { message: "Upload failed" } },
+        });
+      }
       const file = files.get(id);
-      file.content = request.postData();
+      file.content = request.postDataBuffer().toString("utf8");
       file.md5Checksum = checksum(file.content);
       file.version = String(Number(file.version) + 1);
       file.modifiedTime = new Date().toISOString();
+      addRevision(file);
       const response = publicFile(file);
       if (postUploadVersionDrifts.has(id)) {
         file.version = String(Number(file.version) + 1);
@@ -148,12 +241,16 @@ async function installDriveApi(page) {
     setFolderDelay: (id, milliseconds) => folderDelays.set(id, milliseconds),
     setFileDelay: (id, milliseconds) => fileDelays.set(id, milliseconds),
     setPostUploadVersionDrift: (id) => postUploadVersionDrifts.add(id),
+    restrictRevisionDownloads: (id) => restrictedRevisionDownloads.add(id),
+    failNextUpload: (id) => uploadFailures.add(id),
+    getRevisions: (id) => revisions.get(id) || [],
     updateFileContent: (id, content) => {
       const file = files.get(id);
       file.content = content;
       file.md5Checksum = checksum(content);
       file.version = String(Number(file.version) + 1);
       file.modifiedTime = new Date().toISOString();
+      addRevision(file);
     },
   };
 }
