@@ -1,8 +1,14 @@
+const { createHash } = require("node:crypto");
+
 const DRIVE_URL = /^https:\/\/www\.googleapis\.com\/(upload\/)?drive\/v3\/files/;
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function checksum(content) {
+  return createHash("md5").update(content).digest("hex");
 }
 
 function publicFile(file) {
@@ -28,6 +34,7 @@ async function installDriveApi(page) {
   const files = new Map();
   const folderDelays = new Map();
   const fileDelays = new Map();
+  const postUploadVersionDrifts = new Set();
   let nextId = 1;
 
   function addFolder({ id = `folder-${nextId++}`, name, parentId = "root" }) {
@@ -56,6 +63,7 @@ async function installDriveApi(page) {
       content,
       mimeType,
       parents: [parentId],
+      md5Checksum: checksum(content),
       version: "1",
       modifiedTime: new Date().toISOString(),
     };
@@ -119,9 +127,14 @@ async function installDriveApi(page) {
     if (request.method() === "PATCH" && isUpload) {
       const file = files.get(id);
       file.content = request.postData();
+      file.md5Checksum = checksum(file.content);
       file.version = String(Number(file.version) + 1);
       file.modifiedTime = new Date().toISOString();
-      return route.fulfill({ json: publicFile(file) });
+      const response = publicFile(file);
+      if (postUploadVersionDrifts.has(id)) {
+        file.version = String(Number(file.version) + 1);
+      }
+      return route.fulfill({ json: response });
     }
 
     return route.fulfill({ status: 405, body: "Unhandled Drive mock request" });
@@ -134,6 +147,14 @@ async function installDriveApi(page) {
     findByName: (name) => [...files.values()].find((file) => file.name === name),
     setFolderDelay: (id, milliseconds) => folderDelays.set(id, milliseconds),
     setFileDelay: (id, milliseconds) => fileDelays.set(id, milliseconds),
+    setPostUploadVersionDrift: (id) => postUploadVersionDrifts.add(id),
+    updateFileContent: (id, content) => {
+      const file = files.get(id);
+      file.content = content;
+      file.md5Checksum = checksum(content);
+      file.version = String(Number(file.version) + 1);
+      file.modifiedTime = new Date().toISOString();
+    },
   };
 }
 

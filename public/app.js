@@ -849,6 +849,15 @@ function contentForUpload(tab, content) {
   return tab.file?.hasUtf8Bom ? `\ufeff${content}` : content;
 }
 
+function hasDriveContentChanged(localFile, remoteFile) {
+  if (localFile.md5Checksum && remoteFile.md5Checksum) {
+    return localFile.md5Checksum !== remoteFile.md5Checksum;
+  }
+  return Boolean(
+    localFile.version && remoteFile.version !== localFile.version
+  );
+}
+
 function createTab({
   name,
   content = "",
@@ -1248,7 +1257,7 @@ async function listDriveFolder(folderId) {
       orderBy: "folder,name_natural",
       pageSize: "1000",
       fields:
-        "nextPageToken,files(id,name,mimeType,parents,version,modifiedTime)",
+        "nextPageToken,files(id,name,mimeType,parents,md5Checksum,version,modifiedTime)",
       includeItemsFromAllDrives: "true",
       supportsAllDrives: "true",
     });
@@ -1535,7 +1544,7 @@ async function createDriveTextFile(parentId, name, content) {
     "",
   ].join("\r\n");
   const response = await driveFetch(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,parents,version,modifiedTime",
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,version,modifiedTime",
     {
       method: "POST",
       headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
@@ -1827,7 +1836,7 @@ async function loadDriveFile(tab) {
       const metadataResponse = await driveFetch(
         `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
           fileId
-        )}?supportsAllDrives=true&fields=id,name,mimeType,parents,version,modifiedTime`
+        )}?supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,version,modifiedTime`
       );
       const file = await metadataResponse.json();
 
@@ -1849,11 +1858,11 @@ async function loadDriveFile(tab) {
       const confirmationResponse = await driveFetch(
         `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
           file.id
-        )}?supportsAllDrives=true&fields=version,modifiedTime`
+        )}?supportsAllDrives=true&fields=md5Checksum,version,modifiedTime`
       );
       const confirmation = await confirmationResponse.json();
 
-      if (confirmation.version === file.version) {
+      if (!hasDriveContentChanged(file, confirmation)) {
         stableFile = {
           ...file,
           ...confirmation,
@@ -1956,10 +1965,10 @@ async function saveExistingDriveFile(tab) {
     const metadataResponse = await driveFetch(
       `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
         tab.file.id
-      )}?supportsAllDrives=true&fields=version,modifiedTime`
+      )}?supportsAllDrives=true&fields=md5Checksum,version,modifiedTime`
     );
     const remoteFile = await metadataResponse.json();
-    if (tab.file.version && remoteFile.version !== tab.file.version) {
+    if (hasDriveContentChanged(tab.file, remoteFile)) {
       throw new Error("SAVE BLOCKED: FILE CHANGED IN DRIVE");
     }
 
@@ -1967,7 +1976,7 @@ async function saveExistingDriveFile(tab) {
     const response = await driveFetch(
       `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
         tab.file.id
-      )}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,parents,version,modifiedTime`,
+      )}?uploadType=media&supportsAllDrives=true&fields=id,name,mimeType,parents,md5Checksum,version,modifiedTime`,
       {
         method: "PATCH",
         headers: {
