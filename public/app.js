@@ -4,6 +4,7 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const EXPLORER_ROOT_ID = "root";
 const THEME_STORAGE_KEY = "drive-edit-theme";
+const GOOGLE_CONSENT_STORAGE_KEY = "drive-edit-google-consent";
 const DRAFT_DATABASE_NAME = "drive-edit-recovery";
 const DRAFT_STORE_NAME = "drafts";
 const DRAFT_SAVE_DELAY = 500;
@@ -231,6 +232,26 @@ const textEncoder = new TextEncoder();
 const emergencyDraftStorageKey = `${EMERGENCY_DRAFT_STORAGE_PREFIX}${crypto.randomUUID()}`;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
 let themePreferences = loadThemePreferences();
+
+function hasPreviousGoogleConsent() {
+  try {
+    return localStorage.getItem(GOOGLE_CONSENT_STORAGE_KEY) === "granted";
+  } catch {
+    return false;
+  }
+}
+
+function setPreviousGoogleConsent(granted) {
+  try {
+    if (granted) {
+      localStorage.setItem(GOOGLE_CONSENT_STORAGE_KEY, "granted");
+    } else {
+      localStorage.removeItem(GOOGLE_CONSENT_STORAGE_KEY);
+    }
+  } catch (error) {
+    console.warn("Could not save Google consent state.", error);
+  }
+}
 
 function loadThemePreferences() {
   try {
@@ -1659,6 +1680,7 @@ window.addEventListener("load", () => {
       const requests = pendingAuthorizationRequests;
       pendingAuthorizationRequests = [];
       if (response.error) {
+        setPreviousGoogleConsent(false);
         for (const request of requests) {
           request.onError?.();
         }
@@ -1667,6 +1689,7 @@ window.addEventListener("load", () => {
       }
 
       accessToken = response.access_token;
+      setPreviousGoogleConsent(true);
       for (const request of requests) {
         request.run();
       }
@@ -1725,7 +1748,10 @@ function requestDriveAccess(run, onError = null) {
     return true;
   }
 
-  tokenClient.requestAccessToken({ prompt: "consent" });
+  setStatus("AUTHORIZING DRIVE");
+  tokenClient.requestAccessToken({
+    prompt: hasPreviousGoogleConsent() ? "" : "consent",
+  });
   return true;
 }
 
