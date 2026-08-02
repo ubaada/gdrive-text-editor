@@ -124,7 +124,7 @@ button:disabled {
 
 #status {
   margin-left: auto;
-  padding-left: 12px;
+  padding: 0 12px;
 }
 
 #editor {
@@ -136,12 +136,25 @@ footer {
   display: flex;
   min-height: 24px;
   align-items: center;
-  padding: 0 9px;
+  overflow-x: auto;
+  padding-left: 9px;
   border-top: 1px solid var(--ink);
   background: var(--panel);
   color: var(--ink);
   font-size: 12px;
   text-transform: uppercase;
+}
+
+footer > span {
+  white-space: nowrap;
+}
+
+.footer-cell {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  border-left: 1px solid var(--dim);
 }
 
 @media (max-width: 600px) {

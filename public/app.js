@@ -19,6 +19,9 @@ const saveButton = document.getElementById("saveButton");
 const tabsElement = document.getElementById("tabs");
 const filename = document.getElementById("filename");
 const status = document.getElementById("status");
+const cursorPosition = document.getElementById("cursorPosition");
+const documentStats = document.getElementById("documentStats");
+const textEncoder = new TextEncoder();
 
 function setStatus(message) {
   status.textContent = message;
@@ -60,6 +63,10 @@ function createTab({ name, content = "", file = null, dirty = false }) {
   };
 
   tab.model.onDidChangeContent(() => {
+    if (tab.id === activeTabId) {
+      updateEditorStats();
+    }
+
     if (tab.dirty) {
       return;
     }
@@ -161,6 +168,25 @@ function updateActiveFileDisplay() {
   filename.textContent = tab
     ? `${tab.dirty ? "MODIFIED | " : ""}${tab.name}`
     : "NO FILE";
+  updateEditorStats();
+}
+
+function updateEditorStats() {
+  const tab = getActiveTab();
+  if (!tab) {
+    cursorPosition.textContent = "LN --, COL --";
+    documentStats.textContent = "0 LINES | 0 WORDS | 0 CHARS | 0 BYTES";
+    return;
+  }
+
+  const value = tab.model.getValue();
+  const position = editor.getPosition() || { lineNumber: 1, column: 1 };
+  const words = value.trim() ? value.trim().split(/\s+/u).length : 0;
+  const characters = [...value].length;
+  const bytes = textEncoder.encode(value).length;
+
+  cursorPosition.textContent = `LN ${position.lineNumber}, COL ${position.column}`;
+  documentStats.textContent = `${tab.model.getLineCount()} LINES | ${words} WORDS | ${characters} CHARS | ${bytes} BYTES`;
 }
 
 require.config({
@@ -201,6 +227,7 @@ require(["vs/editor/editor.main"], () => {
     padding: { top: 8 },
     readOnly: true,
   });
+  editor.onDidChangeCursorPosition(updateEditorStats);
   newButton.disabled = false;
   openButton.disabled = false;
 });
