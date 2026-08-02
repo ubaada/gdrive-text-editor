@@ -1,6 +1,6 @@
 const { clientId, apiKey, appId } = window.APP_CONFIG;
 
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 
 let tokenClient;
 let accessToken = null;
