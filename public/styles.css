@@ -6,10 +6,10 @@ body {
 }
 
 body {
-  --background: #020602;
-  --ink: #8cff66;
-  --dim: #397c2d;
-  --panel: #071007;
+  --background: #0a0a0a;
+  --ink: #e4e4e4;
+  --dim: #747474;
+  --panel: #151515;
   display: flex;
   flex-direction: column;
   overflow: hidden;

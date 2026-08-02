@@ -122,7 +122,7 @@ const THEMES = {
 const DEFAULT_THEME_PREFERENCES = {
   mode: "dark",
   followSystem: false,
-  darkTheme: "terminal-green",
+  darkTheme: "carbon-white",
   lightTheme: "paper-ink",
 };
 
