@@ -36,7 +36,8 @@ Drive explorer, and new buffers are created with the tab-bar `+` control.
   hover and focus; they must not flip back to the unselected palette.
 - Long filenames and constrained controls must truncate or scroll rather than
   break the layout.
-- The favicon is a white file/document symbol containing an asterisk.
+- The favicon is a white file/document symbol containing an asterisk on a
+  transparent background.
 
 The default dark presentation is Carbon White. The available palettes are:
 
