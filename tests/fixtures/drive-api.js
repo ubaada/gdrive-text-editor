@@ -1,6 +1,7 @@
 const { createHash } = require("node:crypto");
 
 const DRIVE_URL = /^https:\/\/www\.googleapis\.com\/(upload\/)?drive\/v3\/files/;
+const ABOUT_URL = "https://www.googleapis.com/drive/v3/about";
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
 function delay(milliseconds) {
@@ -38,6 +39,11 @@ async function installDriveApi(page) {
   const postUploadVersionDrifts = new Set();
   const restrictedRevisionDownloads = new Set();
   const uploadFailures = new Set();
+  let account = {
+    emailAddress: "test@example.com",
+    permissionId: "account-1",
+  };
+  let aboutRequestCount = 0;
   let nextId = 1;
   let nextRevisionId = 1;
 
@@ -94,6 +100,11 @@ async function installDriveApi(page) {
     addRevision(file);
     return file;
   }
+
+  await page.route(`${ABOUT_URL}*`, async (route) => {
+    aboutRequestCount += 1;
+    return route.fulfill({ json: { user: account } });
+  });
 
   await page.route(DRIVE_URL, async (route) => {
     const request = route.request();
@@ -243,6 +254,10 @@ async function installDriveApi(page) {
     setPostUploadVersionDrift: (id) => postUploadVersionDrifts.add(id),
     restrictRevisionDownloads: (id) => restrictedRevisionDownloads.add(id),
     failNextUpload: (id) => uploadFailures.add(id),
+    setAccount: (emailAddress, permissionId) => {
+      account = { emailAddress, permissionId };
+    },
+    aboutRequestCount: () => aboutRequestCount,
     getRevisions: (id) => revisions.get(id) || [],
     updateFileContent: (id, content) => {
       const file = files.get(id);

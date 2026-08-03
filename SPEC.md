@@ -118,15 +118,23 @@ operations are communicated through transient footer statuses.
 - Authorization requests full Google Drive access so the custom explorer can
   list, create, read, and update files and folders.
 - The first authorization requests explicit consent.
-- The browser remembers only that consent was previously granted. Later token
-  requests, including after reload, must not force the consent prompt again.
+- The browser remembers prior consent and the authorized account's email and
+  stable Drive identity. The email is used as a Google login hint so later token
+  requests normally skip account selection and do not force consent again.
 - OAuth access tokens remain in memory and are not persisted across reloads.
 - While authorization is pending, compatible requests may queue and the footer
   reports authorization progress.
 - OAuth denial or revocation clears the remembered-consent marker. A transient
   popup failure reports the error but does not clear remembered consent.
 - An expired token is cleared and the next user-initiated Drive operation must
-  authorize again.
+  authorize again using the remembered account hint.
+- Account settings show the connected or remembered email and provide
+  `SWITCH ACCOUNT`.
+- Switching explicitly requests Google's account selector without the old login
+  hint. If Drive-backed tabs contain unsaved edits, switching first asks whether
+  those edits may be discarded. Cancellation leaves the account and work
+  unchanged; confirmed edits are discarded only after a different account is
+  successfully authorized.
 
 ## Drive File Explorer
 
@@ -268,7 +276,9 @@ Drive may reject downloading an older unretained revision. The application must:
 
 ## Settings
 
-`[G] SETTINGS` opens an Appearance dialog containing:
+`[G] SETTINGS` opens a dialog with Appearance and Account sections.
+
+Appearance contains:
 
 - Manual light/dark mode.
 - Follow System.
@@ -276,6 +286,9 @@ Drive may reject downloading an older unretained revision. The application must:
 - Editor font and size.
 - Dark-theme selection.
 - Light-theme selection.
+
+Account shows the connected or remembered Google email and provides the account
+switch action described under Google Authorization.
 
 Defaults are dark mode, Follow System off, Carbon White for dark, Paper Ink for
 light, GT America Mono for both UI and editor, and 14 px font sizes.

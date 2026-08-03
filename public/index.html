@@ -78,11 +78,14 @@
     </div>
     <div class="settings-layout">
       <nav class="settings-sections" aria-label="Settings sections">
-        <button type="button" class="settings-section selected" aria-current="page">
+        <button id="appearanceSectionButton" type="button" class="settings-section selected" aria-current="page" aria-controls="appearanceSettingsPanel">
           APPEARANCE
         </button>
+        <button id="accountSectionButton" type="button" class="settings-section" aria-controls="accountSettingsPanel">
+          ACCOUNT
+        </button>
       </nav>
-      <section class="settings-panel" aria-labelledby="appearanceTitle">
+      <section id="appearanceSettingsPanel" class="settings-panel" aria-labelledby="appearanceTitle">
         <h3 id="appearanceTitle">APPEARANCE</h3>
 
         <div class="setting-row">
@@ -128,6 +131,16 @@
           <label class="setting-label" for="lightThemeSelect">LIGHT THEME</label>
           <select id="lightThemeSelect"></select>
         </div>
+      </section>
+      <section id="accountSettingsPanel" class="settings-panel" aria-labelledby="accountTitle" hidden>
+        <h3 id="accountTitle">ACCOUNT</h3>
+        <div class="setting-row stacked">
+          <span class="setting-label">GOOGLE ACCOUNT</span>
+          <span id="googleAccountValue" class="account-value">NO ACCOUNT REMEMBERED</span>
+        </div>
+        <button id="switchAccountButton" class="settings-action" type="button" disabled>
+          SWITCH ACCOUNT
+        </button>
       </section>
     </div>
   </dialog>

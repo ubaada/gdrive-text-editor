@@ -616,6 +616,16 @@ footer > span {
   color: var(--background);
 }
 
+.account-value {
+  overflow-wrap: anywhere;
+  color: var(--dim);
+}
+
+.settings-action {
+  min-height: 38px;
+  border: 1px solid var(--ink);
+}
+
 .settings-panel {
   overflow-y: auto;
   padding: 22px;

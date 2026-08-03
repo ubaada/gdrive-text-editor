@@ -5,6 +5,7 @@ const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 const EXPLORER_ROOT_ID = "root";
 const THEME_STORAGE_KEY = "drive-edit-theme";
 const GOOGLE_CONSENT_STORAGE_KEY = "drive-edit-google-consent";
+const GOOGLE_ACCOUNT_STORAGE_KEY = "drive-edit-google-account";
 const DRAFT_DATABASE_NAME = "drive-edit-recovery";
 const DRAFT_STORE_NAME = "drafts";
 const DRAFT_SAVE_DELAY = 500;
@@ -170,6 +171,11 @@ const EDITOR_FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28];
 let tokenClient;
 let accessToken = null;
 let pendingAuthorizationRequests = [];
+let authorizationGeneration = 0;
+let authorizationIntent = "normal";
+let accountSwitchPending = false;
+let authorizedGoogleAccount = loadAuthorizedGoogleAccount();
+let connectedGoogleAccount = null;
 let editor;
 let tabs = [];
 let activeTabId = null;
@@ -235,6 +241,16 @@ const cursorPosition = document.getElementById("cursorPosition");
 const documentStats = document.getElementById("documentStats");
 const settingsDialog = document.getElementById("settingsDialog");
 const closeSettingsButton = document.getElementById("closeSettingsButton");
+const appearanceSectionButton = document.getElementById(
+  "appearanceSectionButton"
+);
+const accountSectionButton = document.getElementById("accountSectionButton");
+const appearanceSettingsPanel = document.getElementById(
+  "appearanceSettingsPanel"
+);
+const accountSettingsPanel = document.getElementById("accountSettingsPanel");
+const googleAccountValue = document.getElementById("googleAccountValue");
+const switchAccountButton = document.getElementById("switchAccountButton");
 const recoveryDialog = document.getElementById("recoveryDialog");
 const closeRecoveryButton = document.getElementById("closeRecoveryButton");
 const recoveryList = document.getElementById("recoveryList");
@@ -281,6 +297,52 @@ function setPreviousGoogleConsent(granted) {
   } catch (error) {
     console.warn("Could not save Google consent state.", error);
   }
+}
+
+function loadAuthorizedGoogleAccount() {
+  try {
+    const account = JSON.parse(localStorage.getItem(GOOGLE_ACCOUNT_STORAGE_KEY));
+    return account?.emailAddress && account?.permissionId
+      ? {
+          emailAddress: account.emailAddress,
+          permissionId: account.permissionId,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function setAuthorizedGoogleAccount(account) {
+  authorizedGoogleAccount = account;
+  try {
+    if (account) {
+      localStorage.setItem(GOOGLE_ACCOUNT_STORAGE_KEY, JSON.stringify(account));
+    } else {
+      localStorage.removeItem(GOOGLE_ACCOUNT_STORAGE_KEY);
+    }
+  } catch (error) {
+    console.warn("Could not save Google account hint.", error);
+  }
+  updateAccountPanel();
+}
+
+function updateAccountPanel() {
+  const account = connectedGoogleAccount || authorizedGoogleAccount;
+  googleAccountValue.textContent = account
+    ? `${connectedGoogleAccount ? "CONNECTED" : "REMEMBERED"} | ${account.emailAddress}`
+    : "NO ACCOUNT REMEMBERED";
+  switchAccountButton.disabled = !driveClientReady || accountSwitchPending;
+}
+
+function selectSettingsSection(section) {
+  const appearanceSelected = section === "appearance";
+  appearanceSectionButton.classList.toggle("selected", appearanceSelected);
+  accountSectionButton.classList.toggle("selected", !appearanceSelected);
+  appearanceSectionButton.toggleAttribute("aria-current", appearanceSelected);
+  accountSectionButton.toggleAttribute("aria-current", !appearanceSelected);
+  appearanceSettingsPanel.hidden = !appearanceSelected;
+  accountSettingsPanel.hidden = appearanceSelected;
 }
 
 function loadThemePreferences() {
@@ -465,8 +527,18 @@ updateThemeControls();
 applyTheme();
 applyFontPreferences();
 
-settingsButton.addEventListener("click", () => settingsDialog.showModal());
+settingsButton.addEventListener("click", () => {
+  selectSettingsSection("appearance");
+  updateAccountPanel();
+  settingsDialog.showModal();
+});
 closeSettingsButton.addEventListener("click", () => settingsDialog.close());
+appearanceSectionButton.addEventListener("click", () =>
+  selectSettingsSection("appearance")
+);
+accountSectionButton.addEventListener("click", () =>
+  selectSettingsSection("account")
+);
 
 darkModeToggle.addEventListener("change", () => {
   themePreferences.mode = darkModeToggle.checked ? "dark" : "light";
@@ -2192,6 +2264,156 @@ async function createExplorerItem(operation) {
 
 renderExplorerTree();
 
+async function fetchAuthorizedGoogleAccount(token) {
+  const response = await fetch(
+    "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,permissionId)",
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (!response.ok) {
+    throw new Error("GOOGLE ACCOUNT LOOKUP FAILED");
+  }
+  const { user } = await response.json();
+  if (!user?.emailAddress || !user?.permissionId) {
+    throw new Error("GOOGLE ACCOUNT IDENTITY UNAVAILABLE");
+  }
+  return {
+    emailAddress: user.emailAddress,
+    permissionId: user.permissionId,
+  };
+}
+
+function resetDriveContextForAccountChange() {
+  const remainingTabs = [];
+  for (const tab of tabs) {
+    if (!tab.file) {
+      remainingTabs.push(tab);
+      continue;
+    }
+    deleteDraftForTab(tab);
+    tab.revisionPreview?.model.dispose();
+    tab.model.dispose();
+  }
+  tabs = remainingTabs;
+  explorerRoot.children = [];
+  explorerRoot.loaded = false;
+  explorerRoot.loading = false;
+  explorerRoot.expanded = true;
+  selectedExplorerFolderId = EXPLORER_ROOT_ID;
+  setSidebarMode("files");
+  renderExplorerTree();
+  if (tabs.length) {
+    activateTab(tabs[0].id);
+  } else {
+    activeTabId = null;
+    editor.setModel(null);
+    createUntitledTab();
+  }
+}
+
+async function handleTokenResponse(response) {
+  const generation = ++authorizationGeneration;
+  const intent = authorizationIntent;
+  authorizationIntent = "normal";
+  const requests = pendingAuthorizationRequests;
+  pendingAuthorizationRequests = [];
+
+  if (response.error) {
+    accessToken = null;
+    connectedGoogleAccount = null;
+    setPreviousGoogleConsent(false);
+    setAuthorizedGoogleAccount(null);
+    for (const request of requests) {
+      request.onError?.();
+    }
+    accountSwitchPending = false;
+    updateAccountPanel();
+    setStatus(`AUTH FAILED: ${response.error}`);
+    return;
+  }
+
+  accessToken = response.access_token;
+  setPreviousGoogleConsent(true);
+  let account = null;
+  try {
+    account = await fetchAuthorizedGoogleAccount(accessToken);
+  } catch (error) {
+    console.error(error);
+    if (intent === "switch") {
+      accessToken = null;
+      accountSwitchPending = false;
+      updateAccountPanel();
+      setStatus(error.message);
+      return;
+    }
+  }
+  if (generation !== authorizationGeneration) {
+    return;
+  }
+
+  const previousAccount = connectedGoogleAccount || authorizedGoogleAccount;
+  const accountChanged = Boolean(
+    account &&
+      previousAccount &&
+      account.permissionId !== previousAccount.permissionId
+  );
+  if (
+    accountChanged &&
+    intent !== "switch" &&
+    tabs.some((tab) => tab.file && tab.dirty)
+  ) {
+    accessToken = null;
+    for (const request of requests) {
+      request.onError?.();
+    }
+    setStatus("ACCOUNT CHANGED: USE SWITCH ACCOUNT");
+    return;
+  }
+  if (accountChanged) {
+    resetDriveContextForAccountChange();
+  }
+  if (account) {
+    connectedGoogleAccount = account;
+    setAuthorizedGoogleAccount(account);
+  } else {
+    updateAccountPanel();
+  }
+
+  accountSwitchPending = false;
+  updateAccountPanel();
+  for (const request of requests) {
+    request.run();
+  }
+  if (intent === "switch") {
+    loadExplorerFolder(explorerRoot, true);
+    setStatus("ACCOUNT SWITCHED");
+  }
+}
+
+function switchGoogleAccount() {
+  if (accountSwitchPending) {
+    return;
+  }
+  if (
+    tabs.some(
+      (tab) => tab.file && (tab.saving || tab.savePending || tab.loading || tab.restoring)
+    )
+  ) {
+    setStatus("FINISH DRIVE OPERATIONS BEFORE SWITCHING ACCOUNT");
+    return;
+  }
+  const hasDirtyDriveTabs = tabs.some((tab) => tab.file && tab.dirty);
+  if (
+    hasDirtyDriveTabs &&
+    !confirm("Discard unsaved Drive file changes and switch Google account?")
+  ) {
+    return;
+  }
+  accountSwitchPending = true;
+  authorizationIntent = "switch";
+  updateAccountPanel();
+  tokenClient.requestAccessToken({ prompt: "select_account" });
+}
+
 require.config({
   paths: {
     vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs",
@@ -2240,29 +2462,16 @@ window.addEventListener("load", () => {
       for (const request of requests) {
         request.onError?.();
       }
+      accountSwitchPending = false;
+      authorizationIntent = "normal";
+      updateAccountPanel();
       setStatus(`AUTH FAILED: ${error.type || "POPUP ERROR"}`);
     },
-    callback: (response) => {
-      const requests = pendingAuthorizationRequests;
-      pendingAuthorizationRequests = [];
-      if (response.error) {
-        setPreviousGoogleConsent(false);
-        for (const request of requests) {
-          request.onError?.();
-        }
-        setStatus(`AUTH FAILED: ${response.error}`);
-        return;
-      }
-
-      accessToken = response.access_token;
-      setPreviousGoogleConsent(true);
-      for (const request of requests) {
-        request.run();
-      }
-    },
+    callback: handleTokenResponse,
   });
   driveClientReady = true;
   updateExplorerCreateButtons();
+  updateAccountPanel();
 });
 
 window.addEventListener("beforeunload", (event) => {
@@ -2307,6 +2516,7 @@ backToLatestButton.addEventListener("click", () =>
 restoreRevisionButton.addEventListener("click", () =>
   restorePreviewedRevision(getActiveTab())
 );
+switchAccountButton.addEventListener("click", switchGoogleAccount);
 newTabButton.addEventListener("click", () => createUntitledTab());
 saveButton.addEventListener("click", saveFile);
 explorerNewFileButton.addEventListener("click", () =>
@@ -2347,6 +2557,9 @@ function requestDriveAccess(run, onError = null) {
   setStatus("AUTHORIZING DRIVE");
   tokenClient.requestAccessToken({
     prompt: hasPreviousGoogleConsent() ? "" : "consent",
+    ...(authorizedGoogleAccount?.emailAddress
+      ? { login_hint: authorizedGoogleAccount.emailAddress }
+      : {}),
   });
   return true;
 }
@@ -2598,6 +2811,8 @@ async function driveFetch(url, options = {}) {
 
   if (response.status === 401) {
     accessToken = null;
+    connectedGoogleAccount = null;
+    updateAccountPanel();
     throw new Error("Google authorization expired. Try again.");
   }
 

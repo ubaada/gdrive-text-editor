@@ -7,7 +7,7 @@ async function installGoogleAuth(page) {
           mode: "success",
           delay: 0,
           requestCount: 0,
-          lastPrompt: null,
+          lastOptions: null,
         };
         window.google = {
           accounts: {
@@ -17,7 +17,7 @@ async function installGoogleAuth(page) {
                   requestAccessToken(options = {}) {
                     const mock = window.__googleAuthMock;
                     mock.requestCount += 1;
-                    mock.lastPrompt = options.prompt;
+                    mock.lastOptions = options;
                     setTimeout(() => {
                       if (mock.mode === "popup_error") {
                         config.error_callback({ type: "popup_closed" });
@@ -49,7 +49,9 @@ async function installGoogleAuth(page) {
     requestCount: () =>
       page.evaluate(() => window.__googleAuthMock.requestCount),
     lastPrompt: () =>
-      page.evaluate(() => window.__googleAuthMock.lastPrompt),
+      page.evaluate(() => window.__googleAuthMock.lastOptions?.prompt),
+    lastLoginHint: () =>
+      page.evaluate(() => window.__googleAuthMock.lastOptions?.login_hint),
   };
 }
 
