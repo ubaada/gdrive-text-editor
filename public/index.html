@@ -182,6 +182,20 @@
     </div>
   </dialog>
 
+  <dialog id="reconnectDialog" aria-labelledby="reconnectTitle">
+    <div class="settings-titlebar">
+      <h2 id="reconnectTitle">RECONNECT TO DRIVE</h2>
+      <button id="closeReconnectButton" type="button" aria-label="Not now">X</button>
+    </div>
+    <div class="confirmation-panel">
+      <p>GOOGLE NEEDS YOUR CONFIRMATION TO RESTORE THIS ACCOUNT'S DRIVE WORKSPACE.</p>
+      <div class="confirmation-actions">
+        <button id="cancelReconnectButton" type="button">NOT NOW</button>
+        <button id="connectDriveButton" type="button">CONNECT</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="/config.js"></script>
   <script src="/app.js"></script>
 </body>

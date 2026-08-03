@@ -1,7 +1,7 @@
 const { expect, test } = require("../fixtures/app");
 const { setEditorText } = require("./helpers");
 
-test("reload reuses prior Drive consent without forcing the consent prompt", async ({
+test("reload silently reconnects with the remembered account hint", async ({
   app,
   auth,
   page,
@@ -14,13 +14,29 @@ test("reload reuses prior Drive consent without forcing the consent prompt", asy
   await page.reload();
   await expect(page.locator(".monaco-editor")).toBeVisible();
   await expect(page.locator("#recoveryDialog")).toBeHidden();
+  await expect(page.locator("#status")).toHaveText("EXPLORER UPDATED");
+  expect(await auth.lastPrompt()).toBe("none");
+  expect(await auth.lastLoginHint()).toBe("test@example.com");
   await page.locator("#settingsButton").click();
   await page.locator("#accountSectionButton").click();
   await expect(page.locator("#googleAccountValue")).toHaveText(
-    "REMEMBERED | test@example.com"
+    "CONNECTED | test@example.com"
   );
-  await page.locator("#closeSettingsButton").click();
+});
+
+test("failed silent reconnect offers a user-triggered Google popup", async ({
+  app,
+  auth,
+  page,
+}) => {
   await page.locator("#explorerRefreshButton").click();
+  await expect(page.locator("#status")).toHaveText("EXPLORER UPDATED");
+  await auth.setMode("silent_error");
+
+  await page.reload();
+  await expect(page.locator("#reconnectDialog")).toBeVisible();
+  await page.locator("#connectDriveButton").click();
+  await expect(page.locator("#reconnectDialog")).toBeHidden();
   await expect(page.locator("#status")).toHaveText("EXPLORER UPDATED");
   expect(await auth.lastPrompt()).toBe("");
   expect(await auth.lastLoginHint()).toBe("test@example.com");

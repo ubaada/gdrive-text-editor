@@ -522,7 +522,8 @@ footer > span {
 
 #settingsDialog,
 #recoveryDialog,
-#confirmationDialog {
+#confirmationDialog,
+#reconnectDialog {
   width: min(760px, calc(100vw - 32px));
   padding: 0;
   border: 1px solid var(--ink);
@@ -540,13 +541,15 @@ footer > span {
   max-height: min(520px, calc(100vh - 32px));
 }
 
-#confirmationDialog {
+#confirmationDialog,
+#reconnectDialog {
   max-width: 520px;
 }
 
 #settingsDialog::backdrop,
 #recoveryDialog::backdrop,
-#confirmationDialog::backdrop {
+#confirmationDialog::backdrop,
+#reconnectDialog::backdrop {
   background: rgba(70, 70, 70, 0.72);
 }
 
@@ -570,7 +573,8 @@ footer > span {
 
 #closeSettingsButton,
 #closeRecoveryButton,
-#closeConfirmationButton {
+#closeConfirmationButton,
+#closeReconnectButton {
   width: 42px;
   padding: 0;
   border-right: 0;
@@ -583,7 +587,9 @@ footer > span {
 #closeRecoveryButton:hover,
 #closeRecoveryButton:focus-visible,
 #closeConfirmationButton:hover,
-#closeConfirmationButton:focus-visible {
+#closeConfirmationButton:focus-visible,
+#closeReconnectButton:hover,
+#closeReconnectButton:focus-visible {
   background: var(--ink);
   color: var(--background);
 }

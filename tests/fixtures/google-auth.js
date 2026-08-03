@@ -4,7 +4,7 @@ async function installGoogleAuth(page) {
       contentType: "application/javascript",
       body: `
         window.__googleAuthMock = {
-          mode: "success",
+          mode: sessionStorage.getItem("drive-edit-auth-mode") || "success",
           delay: 0,
           requestCount: 0,
           lastOptions: null,
@@ -21,6 +21,11 @@ async function installGoogleAuth(page) {
                     setTimeout(() => {
                       if (mock.mode === "popup_error") {
                         config.error_callback({ type: "popup_closed" });
+                      } else if (
+                        mock.mode === "silent_error" &&
+                        options.prompt === "none"
+                      ) {
+                        config.callback({ error: "interaction_required" });
                       } else if (mock.mode === "oauth_error") {
                         config.callback({ error: "access_denied" });
                       } else {
@@ -41,6 +46,7 @@ async function installGoogleAuth(page) {
     setMode: (mode) =>
       page.evaluate((value) => {
         window.__googleAuthMock.mode = value;
+        sessionStorage.setItem("drive-edit-auth-mode", value);
       }, mode),
     setDelay: (delay) =>
       page.evaluate((value) => {

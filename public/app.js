@@ -6,6 +6,7 @@ const EXPLORER_ROOT_ID = "root";
 const THEME_STORAGE_KEY = "drive-edit-theme";
 const GOOGLE_CONSENT_STORAGE_KEY = "drive-edit-google-consent";
 const GOOGLE_ACCOUNT_STORAGE_KEY = "drive-edit-google-account";
+const WORKSPACE_STORAGE_PREFIX = "drive-edit-workspace:";
 const DRAFT_DATABASE_NAME = "drive-edit-recovery";
 const DRAFT_STORE_NAME = "drafts";
 const DRAFT_SAVE_DELAY = 500;
@@ -174,9 +175,14 @@ let accessToken = null;
 let pendingAuthorizationRequests = [];
 let authorizationGeneration = 0;
 let authorizationIntent = "normal";
+let authorizationInProgress = false;
 let accountSwitchPending = false;
 let authorizedGoogleAccount = loadAuthorizedGoogleAccount();
 let connectedGoogleAccount = null;
+let workspaceAccountId = null;
+let workspaceRestoring = Boolean(authorizedGoogleAccount?.permissionId);
+let silentReconnectStarted = false;
+let bootstrapTabId = null;
 let editor;
 let tabs = [];
 let activeTabId = null;
@@ -269,6 +275,10 @@ const cancelConfirmationButton = document.getElementById(
 const acceptConfirmationButton = document.getElementById(
   "acceptConfirmationButton"
 );
+const reconnectDialog = document.getElementById("reconnectDialog");
+const closeReconnectButton = document.getElementById("closeReconnectButton");
+const cancelReconnectButton = document.getElementById("cancelReconnectButton");
+const connectDriveButton = document.getElementById("connectDriveButton");
 const darkModeToggle = document.getElementById("darkModeToggle");
 const followSystemToggle = document.getElementById("followSystemToggle");
 const darkThemeSelect = document.getElementById("darkThemeSelect");
@@ -361,6 +371,124 @@ function normalizeRulers(values) {
   return [...new Set(values.map(Number).filter(
     (value) => Number.isSafeInteger(value) && value > 0
   ))].sort((first, second) => first - second);
+}
+
+function getWorkspaceStorageKey(accountId) {
+  return `${WORKSPACE_STORAGE_PREFIX}${accountId}`;
+}
+
+function loadWorkspace(accountId) {
+  try {
+    const stored = JSON.parse(
+      localStorage.getItem(getWorkspaceStorageKey(accountId))
+    );
+    const seen = new Set();
+    const files = Array.isArray(stored?.files)
+      ? stored.files.filter((file) => {
+          if (!file?.id || seen.has(file.id)) {
+            return false;
+          }
+          seen.add(file.id);
+          return true;
+        })
+      : [];
+    return {
+      files,
+      activeFileId:
+        typeof stored?.activeFileId === "string"
+          ? stored.activeFileId
+          : null,
+    };
+  } catch {
+    return { files: [], activeFileId: null };
+  }
+}
+
+function saveWorkspace(account = authorizedGoogleAccount) {
+  if (!account?.permissionId || workspaceRestoring) {
+    return;
+  }
+  const files = tabs
+    .filter((tab) => tab.file?.id)
+    .map((tab) => ({
+      id: tab.file.id,
+      name: tab.name,
+      mimeType: tab.file.mimeType || "text/plain",
+      parents: tab.file.parents || [],
+    }));
+  const activeFileId = getActiveTab()?.file?.id || null;
+  try {
+    localStorage.setItem(
+      getWorkspaceStorageKey(account.permissionId),
+      JSON.stringify({ files, activeFileId })
+    );
+  } catch (error) {
+    console.warn("Could not save Drive workspace.", error);
+  }
+}
+
+function removePristineBootstrapTab() {
+  const index = tabs.findIndex((tab) => tab.id === bootstrapTabId);
+  const tab = tabs[index];
+  if (
+    !tab ||
+    tab.file ||
+    tab.dirty ||
+    tab.model.getValue() !== "" ||
+    tab.loading
+  ) {
+    return;
+  }
+  tabs.splice(index, 1);
+  tab.model.dispose();
+  bootstrapTabId = null;
+}
+
+function restoreAccountWorkspace(account) {
+  if (!editorReady || !account?.permissionId) {
+    return;
+  }
+  if (workspaceAccountId === account.permissionId) {
+    return;
+  }
+  const workspace = loadWorkspace(account.permissionId);
+  workspaceRestoring = true;
+  workspaceAccountId = account.permissionId;
+  if (workspace.files.length) {
+    removePristineBootstrapTab();
+  }
+
+  const restoredTabs = [];
+  for (const file of workspace.files) {
+    let tab = tabs.find((candidate) => candidate.file?.id === file.id);
+    if (!tab) {
+      tab = createTab({
+        name: file.name || "LOADING...",
+        file: { ...file },
+        loading: true,
+        activate: false,
+      });
+    }
+    restoredTabs.push(tab);
+  }
+  const activeTab =
+    restoredTabs.find((tab) => tab.file.id === workspace.activeFileId) ||
+    restoredTabs[0] ||
+    getActiveTab() ||
+    tabs[0];
+  if (activeTab) {
+    activateTab(activeTab.id);
+  } else {
+    createUntitledTab();
+  }
+  renderTabs();
+  workspaceRestoring = false;
+  for (const tab of restoredTabs) {
+    if (tab.loading && !openingDriveFileIds.has(tab.file.id)) {
+      beginDriveFileLoad(tab);
+    }
+  }
+  saveWorkspace(account);
 }
 
 function loadThemePreferences() {
@@ -1532,6 +1660,7 @@ function createTab({
   dirty = false,
   draftId = crypto.randomUUID(),
   loading = false,
+  activate = true,
 }) {
   const tab = {
     id: nextTabId++,
@@ -1576,13 +1705,17 @@ function createTab({
   });
 
   tabs.push(tab);
-  activateTab(tab.id);
+  if (activate) {
+    activateTab(tab.id);
+  } else {
+    renderTabs();
+  }
   scheduleDraftSave(tab);
   return tab;
 }
 
 function createUntitledTab() {
-  createTab({
+  return createTab({
     name: `Untitled ${nextUntitledNumber++}`,
   });
   setStatus("NEW BUFFER");
@@ -1610,6 +1743,7 @@ function activateTab(tabId) {
   if (!tab.loading && !tab.loadError) {
     editor.focus();
   }
+  saveWorkspace();
 }
 
 function closeTab(tabId) {
@@ -1644,6 +1778,7 @@ function closeTab(tabId) {
     }
   } else {
     renderTabs();
+    saveWorkspace();
   }
 }
 
@@ -2292,6 +2427,7 @@ async function createExplorerItem(operation) {
         if (targetTab.id === activeTabId) {
           updateHistoryControls();
         }
+        saveWorkspace();
       } else {
         createTab({ name: created.name, content: "", file: created });
       }
@@ -2351,6 +2487,7 @@ async function fetchAuthorizedGoogleAccount(token) {
 }
 
 function resetDriveContextForAccountChange() {
+  workspaceRestoring = true;
   const remainingTabs = [];
   for (const tab of tabs) {
     if (!tab.file) {
@@ -2367,6 +2504,7 @@ function resetDriveContextForAccountChange() {
   explorerRoot.loading = false;
   explorerRoot.expanded = true;
   selectedExplorerFolderId = EXPLORER_ROOT_ID;
+  workspaceAccountId = null;
   setSidebarMode("files");
   renderExplorerTree();
   if (tabs.length) {
@@ -2386,8 +2524,17 @@ async function handleTokenResponse(response) {
   pendingAuthorizationRequests = [];
 
   if (response.error) {
+    authorizationInProgress = false;
+    if (intent === "silent") {
+      pendingAuthorizationRequests.unshift(...requests);
+      showReconnectDialog();
+      setStatus("DRIVE RECONNECT REQUIRED");
+      return;
+    }
     accessToken = null;
     connectedGoogleAccount = null;
+    workspaceAccountId = null;
+    workspaceRestoring = false;
     setPreviousGoogleConsent(false);
     setAuthorizedGoogleAccount(null);
     for (const request of requests) {
@@ -2408,6 +2555,7 @@ async function handleTokenResponse(response) {
     console.error(error);
     if (intent === "switch") {
       accessToken = null;
+      authorizationInProgress = false;
       accountSwitchPending = false;
       updateAccountPanel();
       setStatus(error.message);
@@ -2430,6 +2578,7 @@ async function handleTokenResponse(response) {
     tabs.some((tab) => tab.file && tab.dirty)
   ) {
     accessToken = null;
+    authorizationInProgress = false;
     for (const request of requests) {
       request.onError?.();
     }
@@ -2437,6 +2586,7 @@ async function handleTokenResponse(response) {
     return;
   }
   if (accountChanged) {
+    saveWorkspace(previousAccount);
     resetDriveContextForAccountChange();
   }
   if (account) {
@@ -2447,18 +2597,22 @@ async function handleTokenResponse(response) {
   }
 
   accountSwitchPending = false;
+  authorizationInProgress = false;
   updateAccountPanel();
+  if (account) {
+    restoreAccountWorkspace(account);
+  }
   for (const request of requests) {
     request.run();
   }
-  if (intent === "switch") {
+  if (["silent", "reconnect", "switch"].includes(intent)) {
     loadExplorerFolder(explorerRoot, true);
-    setStatus("ACCOUNT SWITCHED");
+    setStatus(intent === "switch" ? "ACCOUNT SWITCHED" : "DRIVE RECONNECTED");
   }
 }
 
 function switchGoogleAccount() {
-  if (accountSwitchPending) {
+  if (accountSwitchPending || authorizationInProgress) {
     return;
   }
   if (
@@ -2476,10 +2630,50 @@ function switchGoogleAccount() {
   ) {
     return;
   }
+  saveWorkspace();
   accountSwitchPending = true;
+  authorizationInProgress = true;
   authorizationIntent = "switch";
   updateAccountPanel();
   tokenClient.requestAccessToken({ prompt: "select_account" });
+}
+
+function showReconnectDialog() {
+  if (!reconnectDialog.open) {
+    reconnectDialog.showModal();
+  }
+}
+
+function maybeStartSilentReconnect() {
+  if (
+    silentReconnectStarted ||
+    !editorReady ||
+    !driveClientReady ||
+    !authorizedGoogleAccount?.emailAddress
+  ) {
+    return;
+  }
+  silentReconnectStarted = true;
+  authorizationInProgress = true;
+  authorizationIntent = "silent";
+  setStatus("RECONNECTING TO DRIVE");
+  tokenClient.requestAccessToken({
+    prompt: "none",
+    login_hint: authorizedGoogleAccount.emailAddress,
+  });
+}
+
+function startInteractiveReconnect() {
+  reconnectDialog.close();
+  authorizationInProgress = true;
+  authorizationIntent = "reconnect";
+  setStatus("AUTHORIZING DRIVE");
+  tokenClient.requestAccessToken({
+    prompt: hasPreviousGoogleConsent() ? "" : "consent",
+    ...(authorizedGoogleAccount?.emailAddress
+      ? { login_hint: authorizedGoogleAccount.emailAddress }
+      : {}),
+  });
 }
 
 require.config({
@@ -2508,12 +2702,14 @@ require(["vs/editor/editor.main"], () => {
   editorReady = true;
   newTabButton.disabled = false;
   updateExplorerCreateButtons();
-  createUntitledTab();
+  bootstrapTabId = createUntitledTab().id;
   showRecoveryDrafts();
+  maybeStartSilentReconnect();
 });
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
+    saveWorkspace();
     saveEmergencyDrafts();
     for (const tab of tabs) {
       scheduleDraftSave(tab, true);
@@ -2526,13 +2722,21 @@ window.addEventListener("load", () => {
     client_id: clientId,
     scope: DRIVE_SCOPE,
     error_callback: (error) => {
+      const intent = authorizationIntent;
+      authorizationIntent = "normal";
+      authorizationInProgress = false;
       const requests = pendingAuthorizationRequests;
       pendingAuthorizationRequests = [];
+      if (intent === "silent") {
+        pendingAuthorizationRequests.unshift(...requests);
+        showReconnectDialog();
+        setStatus("DRIVE RECONNECT REQUIRED");
+        return;
+      }
       for (const request of requests) {
         request.onError?.();
       }
       accountSwitchPending = false;
-      authorizationIntent = "normal";
       updateAccountPanel();
       setStatus(`AUTH FAILED: ${error.type || "POPUP ERROR"}`);
     },
@@ -2541,9 +2745,11 @@ window.addEventListener("load", () => {
   driveClientReady = true;
   updateExplorerCreateButtons();
   updateAccountPanel();
+  maybeStartSilentReconnect();
 });
 
 window.addEventListener("beforeunload", (event) => {
+  saveWorkspace();
   if (tabs.some((tab) => tab.dirty)) {
     saveEmergencyDrafts();
     event.preventDefault();
@@ -2586,6 +2792,9 @@ restoreRevisionButton.addEventListener("click", () =>
   restorePreviewedRevision(getActiveTab())
 );
 switchAccountButton.addEventListener("click", switchGoogleAccount);
+connectDriveButton.addEventListener("click", startInteractiveReconnect);
+closeReconnectButton.addEventListener("click", () => reconnectDialog.close());
+cancelReconnectButton.addEventListener("click", () => reconnectDialog.close());
 newTabButton.addEventListener("click", () => createUntitledTab());
 saveButton.addEventListener("click", saveFile);
 explorerNewFileButton.addEventListener("click", () =>
@@ -2618,11 +2827,13 @@ function requestDriveAccess(run, onError = null) {
   }
 
   pendingAuthorizationRequests.push({ run, onError });
-  if (pendingAuthorizationRequests.length > 1) {
+  if (authorizationInProgress || pendingAuthorizationRequests.length > 1) {
     setStatus("AUTHORIZATION ALREADY IN PROGRESS");
     return true;
   }
 
+  authorizationInProgress = true;
+  authorizationIntent = "normal";
   setStatus("AUTHORIZING DRIVE");
   tokenClient.requestAccessToken({
     prompt: hasPreviousGoogleConsent() ? "" : "consent",
@@ -2756,6 +2967,7 @@ async function loadDriveFile(tab) {
       editor.focus();
     }
     setStatus("LOADED");
+    saveWorkspace();
   } catch (error) {
     console.error(error);
     if (tabs.includes(tab)) {
@@ -2860,6 +3072,7 @@ async function saveExistingDriveFile(tab) {
     if (sidebarMode === "history" && tab.id === activeTabId) {
       requestRevisionHistory(tab, { force: true });
     }
+    saveWorkspace();
   } catch (error) {
     console.error(error);
     setStatus(error.message);

@@ -84,6 +84,14 @@ operations are communicated through transient footer statuses.
   Drive-backed recovery draft can create a separate tab for that draft.
 - A failed Drive-file tab remains available and selecting the file again retries
   the load.
+- Each Google account remembers its ordered open Drive files and active Drive
+  file. After that account reconnects, those files reopen in the same order and
+  the remembered active file is selected.
+- Untitled local buffers are not part of the account workspace. A pristine
+  bootstrap untitled tab is removed when remembered Drive tabs are restored;
+  edited local work is never removed by delayed restoration.
+- A missing, inaccessible, or unsupported remembered file remains represented by
+  its failed tab without preventing other remembered files from loading.
 
 ## Editor Behavior
 
@@ -116,8 +124,14 @@ operations are communicated through transient footer statuses.
 
 ## Google Authorization
 
-- Authorization is requested only when a Drive operation requires it. The page
-  must not automatically connect to Drive at startup.
+- With a remembered account, page reload attempts noninteractive authorization
+  using `prompt: none`. This attempt must never open an interactive popup on its
+  own.
+- If noninteractive authorization requires user interaction, the app shows a
+  `RECONNECT TO DRIVE` prompt. Its `CONNECT` action opens Google's popup from the
+  user's click. `NOT NOW` leaves Drive disconnected without discarding state.
+- Without a remembered account, authorization remains user-initiated by a Drive
+  operation.
 - Authorization requests full Google Drive access so the custom explorer can
   list, create, read, and update files and folders.
 - The first authorization requests explicit consent.
@@ -138,6 +152,10 @@ operations are communicated through transient footer statuses.
   those edits may be discarded. Cancellation leaves the account and work
   unchanged; confirmed edits are discarded only after a different account is
   successfully authorized.
+- Browser reload, reconnect, and the first disconnected Refresh restore the
+  verified account's remembered Drive workspace. Workspace data is scoped by
+  stable Drive account identity and never contains access tokens or file
+  contents.
 
 ## Drive File Explorer
 
