@@ -205,6 +205,13 @@ const explorerRoot = {
   children: [],
 };
 let selectedExplorerFolderId = EXPLORER_ROOT_ID;
+let userExpandedFolderIds = new Set();
+let userRootExpanded = true;
+let revealedFolderIds = new Set();
+let explorerStateRestoring = false;
+let explorerGeneration = 0;
+let explorerFolderLoads = new WeakMap();
+let activeFileRevealGeneration = 0;
 let sidebarMode = "files";
 let confirmationResolver = null;
 
@@ -398,9 +405,24 @@ function loadWorkspace(accountId) {
         typeof stored?.activeFileId === "string"
           ? stored.activeFileId
           : null,
+      expandedFolderIds: Array.isArray(stored?.expandedFolderIds)
+        ? stored.expandedFolderIds.filter((id) => typeof id === "string")
+        : [],
+      rootExpanded:
+        typeof stored?.rootExpanded === "boolean" ? stored.rootExpanded : true,
+      selectedFolderId:
+        typeof stored?.selectedFolderId === "string"
+          ? stored.selectedFolderId
+          : EXPLORER_ROOT_ID,
     };
   } catch {
-    return { files: [], activeFileId: null };
+    return {
+      files: [],
+      activeFileId: null,
+      expandedFolderIds: [],
+      rootExpanded: true,
+      selectedFolderId: EXPLORER_ROOT_ID,
+    };
   }
 }
 
@@ -420,7 +442,13 @@ function saveWorkspace(account = authorizedGoogleAccount) {
   try {
     localStorage.setItem(
       getWorkspaceStorageKey(account.permissionId),
-      JSON.stringify({ files, activeFileId })
+      JSON.stringify({
+        files,
+        activeFileId,
+        expandedFolderIds: [...userExpandedFolderIds],
+        rootExpanded: userRootExpanded,
+        selectedFolderId: selectedExplorerFolderId,
+      })
     );
   } catch (error) {
     console.warn("Could not save Drive workspace.", error);
@@ -453,7 +481,13 @@ function restoreAccountWorkspace(account) {
   }
   const workspace = loadWorkspace(account.permissionId);
   workspaceRestoring = true;
+  explorerStateRestoring = true;
   workspaceAccountId = account.permissionId;
+  userExpandedFolderIds = new Set(workspace.expandedFolderIds);
+  revealedFolderIds = new Set();
+  userRootExpanded = workspace.rootExpanded;
+  explorerRoot.expanded = userRootExpanded;
+  selectedExplorerFolderId = workspace.selectedFolderId;
   if (workspace.files.length) {
     removePristineBootstrapTab();
   }
@@ -1715,10 +1749,11 @@ function createTab({
 }
 
 function createUntitledTab() {
-  return createTab({
+  const tab = createTab({
     name: `Untitled ${nextUntitledNumber++}`,
   });
   setStatus("NEW BUFFER");
+  return tab;
 }
 
 function activateTab(tabId) {
@@ -1743,6 +1778,8 @@ function activateTab(tabId) {
   if (!tab.loading && !tab.loadError) {
     editor.focus();
   }
+  renderExplorerTree();
+  revealActiveFile(tab);
   saveWorkspace();
 }
 
@@ -1908,6 +1945,22 @@ function findExplorerFolderPath(folderId, folder = explorerRoot, path = []) {
   return null;
 }
 
+function findExplorerItemPath(itemId, folder = explorerRoot, path = []) {
+  const nextPath = [...path, folder];
+  for (const child of folder.children) {
+    if (child.id === itemId) {
+      return [...nextPath, child];
+    }
+    if (child.mimeType === FOLDER_MIME_TYPE) {
+      const match = findExplorerItemPath(itemId, child, nextPath);
+      if (match) {
+        return match;
+      }
+    }
+  }
+  return null;
+}
+
 function isExplorerFileSupported(file) {
   return (
     !file.mimeType.startsWith("application/vnd.google-apps.") &&
@@ -1944,6 +1997,11 @@ function createExplorerRow(item, depth) {
     row.addEventListener("click", () => selectExplorerFolder(item));
   } else {
     const supported = isExplorerFileSupported(item);
+    const active = item.id === getActiveTab()?.file?.id;
+    row.classList.toggle("active-file", active);
+    if (active) {
+      row.setAttribute("aria-current", "true");
+    }
     row.classList.toggle("unsupported", !supported);
     if (supported) {
       row.addEventListener("click", () => openDriveFile(item.id, item));
@@ -2112,19 +2170,190 @@ async function listDriveFolder(folderId) {
   );
 }
 
-async function loadExplorerFolder(folder, force = false) {
-  if (folder.loading || (folder.loaded && !force)) {
+function preserveExplorerChildState(children, previousChildren) {
+  const previousById = new Map(
+    previousChildren.map((child) => [child.id, child])
+  );
+  return children.map((child) => {
+    if (child.mimeType !== FOLDER_MIME_TYPE) {
+      return child;
+    }
+    const previous = previousById.get(child.id);
+    return previous?.mimeType === FOLDER_MIME_TYPE
+      ? {
+          ...child,
+          expanded: previous.expanded,
+          loaded: previous.loaded,
+          loading: false,
+          children: previous.children,
+        }
+      : child;
+  });
+}
+
+async function restoreExpandedFolders(folder) {
+  let restored = true;
+  for (const child of folder.children) {
+    if (
+      child.mimeType === FOLDER_MIME_TYPE &&
+      userExpandedFolderIds.has(child.id)
+    ) {
+      child.expanded = true;
+      if (!(await loadExplorerFolder(child))) {
+        restored = false;
+      }
+    }
+  }
+  return restored;
+}
+
+function clearDerivedExplorerExpansion(folder = explorerRoot) {
+  if (folder === explorerRoot) {
+    explorerRoot.expanded = userRootExpanded;
+  }
+  for (const child of folder.children) {
+    if (child.mimeType !== FOLDER_MIME_TYPE) {
+      continue;
+    }
+    clearDerivedExplorerExpansion(child);
+    if (
+      revealedFolderIds.has(child.id) &&
+      !userExpandedFolderIds.has(child.id)
+    ) {
+      child.expanded = false;
+    }
+  }
+}
+
+async function getDriveFolderChain(parentId, generation) {
+  const chain = [];
+  let currentId = parentId;
+  const visited = new Set();
+  while (
+    currentId &&
+    currentId !== EXPLORER_ROOT_ID &&
+    !visited.has(currentId)
+  ) {
+    if (generation !== activeFileRevealGeneration) {
+      return [];
+    }
+    visited.add(currentId);
+    const response = await driveFetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        currentId
+      )}?supportsAllDrives=true&fields=id,name,mimeType,parents,trashed`
+    );
+    const folder = await response.json();
+    if (folder.trashed || folder.mimeType !== FOLDER_MIME_TYPE) {
+      return [];
+    }
+    chain.unshift(folder.id);
+    currentId = folder.parents?.[0] || null;
+  }
+  return currentId === EXPLORER_ROOT_ID ? chain : [];
+}
+
+async function revealActiveFile(tab) {
+  const generation = ++activeFileRevealGeneration;
+  clearDerivedExplorerExpansion();
+  revealedFolderIds.clear();
+  renderExplorerTree();
+  if (
+    !tab?.file?.id ||
+    !accessToken ||
+    !explorerRoot.loaded ||
+    tab.id !== activeTabId
+  ) {
     return;
   }
+  explorerRoot.expanded = true;
 
+  try {
+    let path = findExplorerItemPath(tab.file.id);
+    let folderIds = path
+      ? path
+          .slice(1, -1)
+          .filter((item) => item.mimeType === FOLDER_MIME_TYPE)
+          .map((item) => item.id)
+      : await getDriveFolderChain(tab.file.parents?.[0], generation);
+    let currentFolder = explorerRoot;
+    for (const folderId of folderIds) {
+      if (generation !== activeFileRevealGeneration) {
+        return;
+      }
+      let folder = currentFolder.children.find(
+        (child) =>
+          child.id === folderId && child.mimeType === FOLDER_MIME_TYPE
+      );
+      if (!folder) {
+        await loadExplorerFolder(currentFolder, true);
+        folder = currentFolder.children.find(
+          (child) =>
+            child.id === folderId && child.mimeType === FOLDER_MIME_TYPE
+        );
+      }
+      if (!folder) {
+        return;
+      }
+      revealedFolderIds.add(folder.id);
+      folder.expanded = true;
+      await loadExplorerFolder(folder);
+      currentFolder = folder;
+    }
+    if (generation !== activeFileRevealGeneration) {
+      return;
+    }
+    renderExplorerTree();
+    if (
+      sidebarMode !== "files" ||
+      document.body.classList.contains("explorer-collapsed")
+    ) {
+      return;
+    }
+    explorerTree
+      .querySelector(`[data-item-id="${CSS.escape(tab.file.id)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  } catch (error) {
+    console.warn("Could not reveal the active Drive file.", error);
+  }
+}
+
+function loadExplorerFolder(folder, force = false) {
+  const existingLoad = explorerFolderLoads.get(folder);
+  if (existingLoad) {
+    return existingLoad;
+  }
+  if (folder.loaded && !force) {
+    return Promise.resolve(true);
+  }
+  const loads = explorerFolderLoads;
+  const load = performExplorerFolderLoad(folder);
+  loads.set(folder, load);
+  const clearLoad = () => {
+    if (loads.get(folder) === load) {
+      loads.delete(folder);
+    }
+  };
+  load.then(clearLoad, clearLoad);
+  return load;
+}
+
+async function performExplorerFolderLoad(folder) {
+  const generation = explorerGeneration;
   folder.loading = true;
-  folder.expanded = true;
   renderExplorerTree();
   startExplorerLoadingAnimation();
   let createDestinationChanged = false;
+  let loadedSuccessfully = false;
   try {
-    folder.children = await listDriveFolder(folder.id);
+    const previousChildren = folder.children;
+    const children = await listDriveFolder(folder.id);
+    if (generation !== explorerGeneration) {
+      return false;
+    }
+    folder.children = preserveExplorerChildState(children, previousChildren);
     folder.loaded = true;
+    loadedSuccessfully = await restoreExpandedFolders(folder);
     if (explorerCreateOperation) {
       const operationParent = findExplorerFolder(
         explorerCreateOperation.parentId
@@ -2138,7 +2367,10 @@ async function loadExplorerFolder(folder, force = false) {
         setStatus("CREATE DESTINATION CHANGED TO REFRESHED FOLDER");
       }
     }
-    if (!findExplorerFolder(selectedExplorerFolderId)) {
+    if (
+      !explorerStateRestoring &&
+      !findExplorerFolder(selectedExplorerFolderId)
+    ) {
       selectedExplorerFolderId = folder.id;
     }
     if (!createDestinationChanged) {
@@ -2148,16 +2380,38 @@ async function loadExplorerFolder(folder, force = false) {
     console.error(error);
     setStatus(error.message);
   } finally {
+    if (generation !== explorerGeneration) {
+      return false;
+    }
     folder.loading = false;
+    if (folder.id === EXPLORER_ROOT_ID && explorerStateRestoring) {
+      explorerStateRestoring = false;
+      if (
+        loadedSuccessfully &&
+        !findExplorerFolder(selectedExplorerFolderId)
+      ) {
+        selectedExplorerFolderId = EXPLORER_ROOT_ID;
+      }
+    }
     renderExplorerTree();
     stopExplorerLoadingAnimation();
+    if (loadedSuccessfully) {
+      saveWorkspace();
+    }
+    if (folder.id === EXPLORER_ROOT_ID && loadedSuccessfully) {
+      revealActiveFile(getActiveTab());
+    }
   }
+  return loadedSuccessfully;
 }
 
 function selectExplorerFolder(folder) {
   selectedExplorerFolderId = folder.id;
   if (!accessToken) {
+    userExpandedFolderIds.add(folder.id);
+    folder.expanded = true;
     renderExplorerTree();
+    saveWorkspace();
     requestDriveAccess(() => loadExplorerFolder(folder));
     return;
   }
@@ -2172,14 +2426,64 @@ function selectExplorerFolder(folder) {
       return;
     }
     folder.expanded = !folder.expanded;
+    if (folder.expanded) {
+      userExpandedFolderIds.add(folder.id);
+    } else {
+      userExpandedFolderIds.delete(folder.id);
+      revealedFolderIds.delete(folder.id);
+    }
+    if (folder === explorerRoot) {
+      userRootExpanded = folder.expanded;
+    }
     renderExplorerTree();
   } else {
+    userExpandedFolderIds.add(folder.id);
+    folder.expanded = true;
+    if (folder === explorerRoot) {
+      userRootExpanded = true;
+    }
     loadExplorerFolder(folder);
   }
+  saveWorkspace();
 }
 
-function refreshExplorerFolder(folderId = selectedExplorerFolderId) {
-  const folder = findExplorerFolder(folderId) || explorerRoot;
+async function refreshExplorerFolder(folderId = selectedExplorerFolderId) {
+  const generation = explorerGeneration;
+  let folder = findExplorerFolder(folderId) || explorerRoot;
+  if (folder !== explorerRoot) {
+    try {
+      const response = await driveFetch(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+          folder.id
+        )}?supportsAllDrives=true&fields=id,mimeType,trashed`
+      );
+      const currentFolder = await response.json();
+      if (generation !== explorerGeneration) {
+        return false;
+      }
+      if (currentFolder.trashed || currentFolder.mimeType !== FOLDER_MIME_TYPE) {
+        folder = explorerRoot;
+      }
+    } catch (error) {
+      if (generation !== explorerGeneration) {
+        return false;
+      }
+      if (error.status === 404) {
+        folder = explorerRoot;
+      } else {
+        console.error(error);
+        setStatus(error.message);
+        return false;
+      }
+    }
+    if (folder === explorerRoot) {
+      selectedExplorerFolderId = EXPLORER_ROOT_ID;
+      saveWorkspace();
+    }
+  }
+  if (generation !== explorerGeneration) {
+    return false;
+  }
   return loadExplorerFolder(folder, true);
 }
 
@@ -2440,6 +2744,7 @@ async function createExplorerItem(operation) {
       explorerCreateOperation = null;
       updateExplorerCreateButtons();
       renderExplorerTree();
+      saveWorkspace();
       setStatus("FOLDER CREATED");
       requestAnimationFrame(() => {
         for (const row of explorerTree.querySelectorAll(".explorer-row")) {
@@ -2458,6 +2763,7 @@ async function createExplorerItem(operation) {
       operation.submitting = false;
       operation.focusPending = true;
       renderExplorerTree();
+      saveWorkspace();
       setStatus("DESTINATION UNAVAILABLE: SELECTED MY DRIVE");
     } else {
       setStatus(error.message);
@@ -2487,6 +2793,9 @@ async function fetchAuthorizedGoogleAccount(token) {
 }
 
 function resetDriveContextForAccountChange() {
+  explorerGeneration += 1;
+  explorerFolderLoads = new WeakMap();
+  activeFileRevealGeneration += 1;
   workspaceRestoring = true;
   const remainingTabs = [];
   for (const tab of tabs) {
@@ -2504,6 +2813,10 @@ function resetDriveContextForAccountChange() {
   explorerRoot.loading = false;
   explorerRoot.expanded = true;
   selectedExplorerFolderId = EXPLORER_ROOT_ID;
+  userExpandedFolderIds = new Set();
+  userRootExpanded = true;
+  revealedFolderIds = new Set();
+  explorerStateRestoring = false;
   workspaceAccountId = null;
   setSidebarMode("files");
   renderExplorerTree();
@@ -2531,12 +2844,12 @@ async function handleTokenResponse(response) {
       setStatus("DRIVE RECONNECT REQUIRED");
       return;
     }
-    accessToken = null;
-    connectedGoogleAccount = null;
-    workspaceAccountId = null;
-    workspaceRestoring = false;
-    setPreviousGoogleConsent(false);
-    setAuthorizedGoogleAccount(null);
+    if (intent !== "switch") {
+      accessToken = null;
+      connectedGoogleAccount = null;
+      setPreviousGoogleConsent(false);
+      updateAccountPanel();
+    }
     for (const request of requests) {
       request.onError?.();
     }
@@ -2546,21 +2859,20 @@ async function handleTokenResponse(response) {
     return;
   }
 
-  accessToken = response.access_token;
-  setPreviousGoogleConsent(true);
-  let account = null;
+  const candidateToken = response.access_token;
+  let account;
   try {
-    account = await fetchAuthorizedGoogleAccount(accessToken);
+    account = await fetchAuthorizedGoogleAccount(candidateToken);
   } catch (error) {
     console.error(error);
-    if (intent === "switch") {
-      accessToken = null;
-      authorizationInProgress = false;
-      accountSwitchPending = false;
-      updateAccountPanel();
-      setStatus(error.message);
-      return;
+    authorizationInProgress = false;
+    accountSwitchPending = false;
+    for (const request of requests) {
+      request.onError?.();
     }
+    updateAccountPanel();
+    setStatus(error.message);
+    return;
   }
   if (generation !== authorizationGeneration) {
     return;
@@ -2575,9 +2887,8 @@ async function handleTokenResponse(response) {
   if (
     accountChanged &&
     intent !== "switch" &&
-    tabs.some((tab) => tab.file && tab.dirty)
+    (tabs.some((tab) => tab.file && tab.dirty) || explorerCreateOperation)
   ) {
-    accessToken = null;
     authorizationInProgress = false;
     for (const request of requests) {
       request.onError?.();
@@ -2589,19 +2900,15 @@ async function handleTokenResponse(response) {
     saveWorkspace(previousAccount);
     resetDriveContextForAccountChange();
   }
-  if (account) {
-    connectedGoogleAccount = account;
-    setAuthorizedGoogleAccount(account);
-  } else {
-    updateAccountPanel();
-  }
+  accessToken = candidateToken;
+  setPreviousGoogleConsent(true);
+  connectedGoogleAccount = account;
+  setAuthorizedGoogleAccount(account);
 
   accountSwitchPending = false;
   authorizationInProgress = false;
   updateAccountPanel();
-  if (account) {
-    restoreAccountWorkspace(account);
-  }
+  restoreAccountWorkspace(account);
   for (const request of requests) {
     request.run();
   }
@@ -2616,6 +2923,7 @@ function switchGoogleAccount() {
     return;
   }
   if (
+    explorerCreateOperation ||
     tabs.some(
       (tab) => tab.file && (tab.saving || tab.savePending || tab.loading || tab.restoring)
     )

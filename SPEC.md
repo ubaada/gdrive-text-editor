@@ -141,8 +141,13 @@ operations are communicated through transient footer statuses.
 - OAuth access tokens remain in memory and are not persisted across reloads.
 - While authorization is pending, compatible requests may queue and the footer
   reports authorization progress.
-- OAuth denial or revocation clears the remembered-consent marker. A transient
-  popup failure reports the error but does not clear remembered consent.
+- OAuth denial or revocation during ordinary authorization clears the
+  remembered-consent marker but retains the remembered account and its
+  workspace for a later reconnect. A failed or cancelled account-switch attempt
+  and a transient popup failure report the error without disconnecting the
+  current account or clearing its remembered consent.
+- A candidate access token is not used for Drive operations or persisted as the
+  connected account until Drive verifies its email and stable identity.
 - An expired token is cleared and the next user-initiated Drive operation must
   authorize again using the remembered account hint.
 - Account settings show the connected or remembered email and provide
@@ -152,6 +157,8 @@ operations are communicated through transient footer statuses.
   those edits may be discarded. Cancellation leaves the account and work
   unchanged; confirmed edits are discarded only after a different account is
   successfully authorized.
+- Account switching waits until inline creation and active Drive file
+  operations finish.
 - Browser reload, reconnect, and the first disconnected Refresh restore the
   verified account's remembered Drive workspace. Workspace data is scoped by
   stable Drive account identity and never contains access tokens or file
@@ -168,6 +175,13 @@ operations are communicated through transient footer statuses.
 - Folder loading has an inline animated indicator. Empty and unloaded folders
   have explicit messages.
 - The selected folder is the destination for new files and folders.
+- Each Google account remembers explicitly expanded folders, collapsed folders,
+  and the selected creation destination. Reconnect and reload restore that tree
+  state after validating it against current Drive contents.
+- A temporary API failure during restoration preserves the remembered tree
+  state for a later retry instead of replacing it with fallback state.
+- Refresh preserves surviving descendant expansion state instead of collapsing
+  the refreshed branch.
 - Refresh updates the selected folder. It falls back to My Drive when the
   selected folder is no longer present in a refreshed tree or a creation
   destination is reported unavailable.
@@ -178,6 +192,14 @@ operations are communicated through transient footer statuses.
   snapshot.
 - Unsupported rows are visibly dimmed, exposed as disabled, and explain why the
   file cannot be edited.
+- The active Drive-backed tab's file is visibly selected in Files mode and
+  exposed as the current tree item.
+- Activating or reconnecting an open file expands only the ancestors required to
+  reveal its current Drive location. Unrelated user-expanded branches remain
+  expanded.
+- Ancestors expanded only for active-file reveal are derived state and are not
+  saved as explicit user expansion. The user may collapse such an ancestor; it
+  is revealed again when the tab is reactivated or the account reconnects.
 
 ### Inline Creation
 

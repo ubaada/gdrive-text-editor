@@ -35,6 +35,7 @@ async function installDriveApi(page) {
   const files = new Map();
   const revisions = new Map();
   const folderDelays = new Map();
+  const folderListFailures = new Set();
   const fileDelays = new Map();
   const postUploadVersionDrifts = new Set();
   const restrictedRevisionDownloads = new Set();
@@ -44,6 +45,7 @@ async function installDriveApi(page) {
     permissionId: "account-1",
   };
   let aboutRequestCount = 0;
+  let failNextAbout = false;
   let nextId = 1;
   let nextRevisionId = 1;
 
@@ -103,6 +105,10 @@ async function installDriveApi(page) {
 
   await page.route(`${ABOUT_URL}*`, async (route) => {
     aboutRequestCount += 1;
+    if (failNextAbout) {
+      failNextAbout = false;
+      return route.fulfill({ status: 500, body: "Account lookup failed" });
+    }
     return route.fulfill({ json: { user: account } });
   });
 
@@ -176,10 +182,17 @@ async function installDriveApi(page) {
 
     if (request.method() === "GET" && !id) {
       const parentId = url.searchParams.get("q")?.match(/'([^']+)' in parents/)?.[1];
-      await delay(folderDelays.get(parentId) || 0);
+      if (folderListFailures.delete(parentId)) {
+        return route.fulfill({ status: 500, body: "Folder list failed" });
+      }
       const children = [...files.values()]
         .filter((file) => file.parents?.includes(parentId))
         .map(publicFile);
+      const configuredDelay = folderDelays.get(parentId);
+      const milliseconds = Array.isArray(configuredDelay)
+        ? configuredDelay.shift() || 0
+        : configuredDelay || 0;
+      await delay(milliseconds);
       return route.fulfill({ json: { files: children } });
     }
 
@@ -250,10 +263,17 @@ async function installDriveApi(page) {
     get: (id) => files.get(id),
     findByName: (name) => [...files.values()].find((file) => file.name === name),
     setFolderDelay: (id, milliseconds) => folderDelays.set(id, milliseconds),
+    setFolderDelaySequence: (id, milliseconds) =>
+      folderDelays.set(id, [...milliseconds]),
     setFileDelay: (id, milliseconds) => fileDelays.set(id, milliseconds),
     setPostUploadVersionDrift: (id) => postUploadVersionDrifts.add(id),
     restrictRevisionDownloads: (id) => restrictedRevisionDownloads.add(id),
     failNextUpload: (id) => uploadFailures.add(id),
+    failNextFolderList: (id) => folderListFailures.add(id),
+    failNextAbout: () => {
+      failNextAbout = true;
+    },
+    remove: (id) => files.delete(id),
     setAccount: (emailAddress, permissionId) => {
       account = { emailAddress, permissionId };
     },

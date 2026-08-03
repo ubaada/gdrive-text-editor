@@ -213,9 +213,16 @@ body.explorer-collapsed #fileExplorer {
 
 .explorer-row:hover,
 .explorer-row:focus-visible,
-.explorer-row.selected {
+.explorer-row.selected,
+.explorer-row.active-file {
   background: var(--ink);
   color: var(--background);
+}
+
+.explorer-row.active-file {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .explorer-row.unsupported {
