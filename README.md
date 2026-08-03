@@ -2,10 +2,8 @@
 
 A browser-based, monochrome text editor for files stored in Google Drive.
 
-<p>
-  <img src="screenshots/carbon-white.png" alt="Drive Edit using Carbon White" width="49%">
-  <img src="screenshots/solar-sand.png" alt="Drive Edit using Solar Sand" width="49%">
-</p>
+  <img src="screenshots/carbon-white.png" alt="Drive Edit using Carbon White" width="100%">
+  <img src="screenshots/solar-sand.png" alt="Drive Edit using Solar Sand" width="100%">
 
 ## Features
 
