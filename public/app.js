@@ -13,18 +13,7 @@ const DRAFT_SAVE_DELAY = 500;
 const REVISION_PAGE_SIZE = 1000;
 const SEARCH_DELAY = 180;
 const EMERGENCY_DRAFT_STORAGE_PREFIX = "drive-edit-emergency-drafts:";
-const LOADING_FRAMES = [
-  "⠋",
-  "⠙",
-  "⠹",
-  "⠸",
-  "⠼",
-  "⠴",
-  "⠦",
-  "⠧",
-  "⠇",
-  "⠏",
-];
+const LOADING_FRAMES = ["|", "/", "-", "\\"];
 const TEXT_APPLICATION_MIME_TYPES = new Set([
   "application/ecmascript",
   "application/javascript",
