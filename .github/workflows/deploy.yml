@@ -9,12 +9,17 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   PROJECT_ID: personal-gcp-project1
   REGION: australia-southeast1
   REPOSITORY: drive-text-editor
   SERVICE: drive-text-editor
   IMAGE: drive-text-editor
+  RUNTIME_SERVICE_ACCOUNT: drive-text-editor-runtime@personal-gcp-project1.iam.gserviceaccount.com
 
 jobs:
   deploy:
@@ -22,35 +27,16 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Generate browser configuration
-        env:
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          config = {
-              "clientId": os.environ["GOOGLE_CLIENT_ID"],
-          }
-
-          Path("public/config.js").write_text(
-              "window.APP_CONFIG = " + json.dumps(config) + ";\n",
-              encoding="utf-8",
-          )
-          PY
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.DEPLOYER_SERVICE_ACCOUNT }}
 
       - name: Install Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v3
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
 
       - name: Configure Docker authentication
         run: |
@@ -60,19 +46,24 @@ jobs:
 
       - name: Build and push image
         env:
-          IMAGE_URI: australia-southeast1-docker.pkg.dev/personal-gcp-project1/drive-text-editor/drive-text-editor:${{ github.sha }}
+          IMAGE_URI: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
         run: |
-          docker build --tag "$IMAGE_URI" .
+          docker build \
+            --build-arg "GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}" \
+            --tag "$IMAGE_URI" \
+            .
           docker push "$IMAGE_URI"
 
       - name: Deploy to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v3
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3
         with:
-          service: drive-text-editor
-          region: australia-southeast1
-          image: australia-southeast1-docker.pkg.dev/personal-gcp-project1/drive-text-editor/drive-text-editor:${{ github.sha }}
+          service: ${{ env.SERVICE }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }}
           flags: >-
             --no-allow-unauthenticated
+            --service-account=${{ env.RUNTIME_SERVICE_ACCOUNT }}
             --min-instances=0
             --max-instances=1
             --cpu=1
