@@ -81,3 +81,12 @@ Use judgment; these are strong defaults, not an inflexible gate:
 - Never commit secrets, credentials, or access tokens.
 - Do not regenerate screenshots unless the visual change is intentional.
 - Do not commit or push unless the user requests it.
+
+## Commit Co-Authorship
+
+- An agent may add itself as a commit co-author when it contributed to the
+  change.
+- Use the model name in lowercase with words separated by dashes, for example
+  `opus-4.6` or `gpt-sol-5.6`.
+- Add a valid trailer in this form:
+  `Co-authored-by: MODEL-NAME <MODEL-NAME@users.noreply.github.com>`.
