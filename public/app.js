@@ -11,6 +11,7 @@ const DRAFT_DATABASE_NAME = "drive-edit-recovery";
 const DRAFT_STORE_NAME = "drafts";
 const DRAFT_SAVE_DELAY = 500;
 const REVISION_PAGE_SIZE = 1000;
+const SEARCH_DELAY = 180;
 const EMERGENCY_DRAFT_STORAGE_PREFIX = "drive-edit-emergency-drafts:";
 const LOADING_FRAMES = [
   "⠋",
@@ -212,13 +213,25 @@ let explorerStateRestoring = false;
 let explorerGeneration = 0;
 let explorerFolderLoads = new WeakMap();
 let activeFileRevealGeneration = 0;
+let searchMode = "filename";
+let searchGeneration = 0;
+let searchTimer = null;
+let searchMatches = [];
+let selectedSearchIndex = -1;
 let sidebarMode = "files";
 let confirmationResolver = null;
 
 const explorerToggle = document.getElementById("explorerToggle");
 const newTabButton = document.getElementById("newTabButton");
 const saveButton = document.getElementById("saveButton");
+const searchButton = document.getElementById("searchButton");
 const settingsButton = document.getElementById("settingsButton");
+const searchPanel = document.getElementById("searchPanel");
+const filenameSearchMode = document.getElementById("filenameSearchMode");
+const contentSearchMode = document.getElementById("contentSearchMode");
+const closeSearchButton = document.getElementById("closeSearchButton");
+const searchInput = document.getElementById("searchInput");
+const searchResults = document.getElementById("searchResults");
 const explorerNewFileButton = document.getElementById(
   "explorerNewFileButton"
 );
@@ -735,6 +748,7 @@ applyTheme();
 applyFontPreferences();
 
 settingsButton.addEventListener("click", () => {
+  closeSearch(false);
   selectSettingsSection("appearance");
   updateAccountPanel();
   settingsDialog.showModal();
@@ -1968,6 +1982,296 @@ function isExplorerFileSupported(file) {
   );
 }
 
+function escapeDriveSearchValue(value) {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+function createDriveSearchQuery(query, mode) {
+  if (mode === "filename") {
+    return `name contains '${escapeDriveSearchValue(query)}' and trashed = false`;
+  }
+  const phrase = query.match(/^"(.+)"$/)?.[1];
+  const terms = phrase ? [`"${phrase}"`] : query.split(/\s+/).filter(Boolean);
+  return `${terms
+    .map((term) => `fullText contains '${escapeDriveSearchValue(term)}'`)
+    .join(" and ")} and trashed = false`;
+}
+
+async function listSharedDriveIds(generation) {
+  const driveIds = [];
+  let pageToken = null;
+  do {
+    if (generation !== searchGeneration) {
+      return [];
+    }
+    const parameters = new URLSearchParams({
+      pageSize: "100",
+      fields: "nextPageToken,drives(id)",
+    });
+    if (pageToken) {
+      parameters.set("pageToken", pageToken);
+    }
+    const response = await driveFetch(
+      `https://www.googleapis.com/drive/v3/drives?${parameters}`
+    );
+    const page = await response.json();
+    driveIds.push(...(page.drives || []).map((drive) => drive.id));
+    pageToken = page.nextPageToken || null;
+  } while (pageToken);
+  return driveIds;
+}
+
+async function listDriveSearchCorpus(
+  query,
+  mode,
+  generation,
+  corpus,
+  driveId = null
+) {
+  const files = [];
+  let pageToken = null;
+  do {
+    if (generation !== searchGeneration) {
+      return [];
+    }
+    const parameters = new URLSearchParams({
+      q: createDriveSearchQuery(query, mode),
+      spaces: "drive",
+      corpora: corpus,
+      pageSize: "1000",
+      fields:
+        "nextPageToken,files(id,name,mimeType,parents,md5Checksum,headRevisionId,version,modifiedTime)",
+      includeItemsFromAllDrives: "true",
+      supportsAllDrives: "true",
+    });
+    if (pageToken) {
+      parameters.set("pageToken", pageToken);
+    }
+    if (driveId) {
+      parameters.set("driveId", driveId);
+    }
+    const response = await driveFetch(
+      `https://www.googleapis.com/drive/v3/files?${parameters}`
+    );
+    const page = await response.json();
+    files.push(...(page.files || []));
+    pageToken = page.nextPageToken || null;
+  } while (pageToken);
+  return files;
+}
+
+async function listDriveSearchResults(query, mode, generation) {
+  const files = await listDriveSearchCorpus(
+    query,
+    mode,
+    generation,
+    "user"
+  );
+  const sharedDriveIds = await listSharedDriveIds(generation);
+  for (const driveId of sharedDriveIds) {
+    files.push(
+      ...(await listDriveSearchCorpus(
+        query,
+        mode,
+        generation,
+        "drive",
+        driveId
+      ))
+    );
+  }
+
+  return [...new Map(files.map((file) => [file.id, file])).values()]
+    .filter(
+      (file) =>
+        file.mimeType !== FOLDER_MIME_TYPE && isExplorerFileSupported(file)
+    )
+    .sort((first, second) => first.name.localeCompare(second.name));
+}
+
+function renderSearchMessage(message) {
+  searchMatches = [];
+  selectedSearchIndex = -1;
+  searchInput.removeAttribute("aria-activedescendant");
+  const element = document.createElement("div");
+  element.className = "search-message";
+  element.setAttribute("role", "status");
+  element.textContent = message;
+  searchResults.replaceChildren(element);
+}
+
+function updateSelectedSearchResult(index) {
+  if (!searchMatches.length) {
+    selectedSearchIndex = -1;
+    searchInput.removeAttribute("aria-activedescendant");
+    return;
+  }
+  selectedSearchIndex =
+    (index + searchMatches.length) % searchMatches.length;
+  const rows = [...searchResults.querySelectorAll(".search-result")];
+  rows.forEach((row, rowIndex) => {
+    row.setAttribute(
+      "aria-selected",
+      String(rowIndex === selectedSearchIndex)
+    );
+  });
+  const selected = rows[selectedSearchIndex];
+  searchInput.setAttribute("aria-activedescendant", selected.id);
+  selected.scrollIntoView({ block: "nearest" });
+}
+
+function openSearchResult(file) {
+  closeSearch();
+  openDriveFile(file.id, file);
+}
+
+function renderSearchResults(files) {
+  searchMatches = files;
+  selectedSearchIndex = files.length ? 0 : -1;
+  searchResults.replaceChildren();
+  if (!files.length) {
+    renderSearchMessage("NO MATCHING TEXT FILES");
+    return;
+  }
+
+  files.forEach((file, index) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.id = `search-result-${index}`;
+    row.className = "search-result";
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(index === selectedSearchIndex));
+    row.title = file.name;
+    const name = document.createElement("span");
+    name.className = "search-result-name";
+    name.textContent = file.name;
+    const type = document.createElement("span");
+    type.className = "search-result-type";
+    type.textContent = "TEXT FILE";
+    row.append(name, type);
+    row.addEventListener("mousemove", () => updateSelectedSearchResult(index));
+    row.addEventListener("click", () => openSearchResult(file));
+    searchResults.append(row);
+  });
+  searchInput.setAttribute(
+    "aria-activedescendant",
+    `search-result-${selectedSearchIndex}`
+  );
+}
+
+async function performDriveSearch(query, mode, generation) {
+  if (generation !== searchGeneration || searchPanel.hidden) {
+    return;
+  }
+  try {
+    const files = await listDriveSearchResults(query, mode, generation);
+    if (generation !== searchGeneration || searchPanel.hidden) {
+      return;
+    }
+    renderSearchResults(files);
+    setStatus(`SEARCH RESULTS: ${files.length}`);
+  } catch (error) {
+    if (generation !== searchGeneration || searchPanel.hidden) {
+      return;
+    }
+    console.error(error);
+    renderSearchMessage("SEARCH FAILED");
+    setStatus(`SEARCH FAILED: ${error.message}`);
+  }
+}
+
+function scheduleDriveSearch() {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+  const query = searchInput.value.trim();
+  const mode = searchMode;
+  const generation = ++searchGeneration;
+  if (!query) {
+    renderSearchMessage("TYPE TO SEARCH ALL DRIVE");
+    return;
+  }
+
+  renderSearchMessage("SEARCHING DRIVE");
+  setStatus("SEARCHING DRIVE");
+  const run = () => performDriveSearch(query, mode, generation);
+  const fail = () => {
+    if (generation === searchGeneration && !searchPanel.hidden) {
+      renderSearchMessage("AUTHORIZATION FAILED");
+    }
+  };
+  if (!accessToken) {
+    requestDriveAccess(run, fail);
+    return;
+  }
+  searchTimer = setTimeout(run, SEARCH_DELAY);
+}
+
+function setSearchMode(mode) {
+  searchMode = mode;
+  const filenameSelected = mode === "filename";
+  filenameSearchMode.setAttribute("aria-pressed", String(filenameSelected));
+  contentSearchMode.setAttribute("aria-pressed", String(!filenameSelected));
+  searchInput.placeholder = filenameSelected
+    ? "SEARCH FILENAMES"
+    : "SEARCH INDEXED CONTENT";
+  if (!searchPanel.hidden) {
+    scheduleDriveSearch();
+    searchInput.focus();
+  }
+}
+
+function openSearch(mode = "filename") {
+  if (
+    settingsDialog.open ||
+    recoveryDialog.open ||
+    confirmationDialog.open ||
+    reconnectDialog.open
+  ) {
+    return;
+  }
+  const opening = searchPanel.hidden;
+  searchPanel.hidden = false;
+  searchInput.setAttribute("aria-expanded", "true");
+  if (opening) {
+    searchInput.value = "";
+    renderSearchMessage("CONNECTING TO DRIVE");
+    requestDriveAccess(
+      () => {
+        if (!searchPanel.hidden) {
+          if (!searchInput.value.trim()) {
+            renderSearchMessage("TYPE TO SEARCH ALL DRIVE");
+          }
+          searchInput.focus();
+        }
+      },
+      () => {
+        if (!searchPanel.hidden) {
+          renderSearchMessage("AUTHORIZATION FAILED");
+        }
+      }
+    );
+  }
+  setSearchMode(mode);
+  requestAnimationFrame(() => searchInput.focus());
+}
+
+function closeSearch(restoreFocus = true) {
+  if (searchPanel.hidden) {
+    return;
+  }
+  searchPanel.hidden = true;
+  searchInput.setAttribute("aria-expanded", "false");
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+  searchGeneration += 1;
+  if (restoreFocus && editorReady) {
+    editor.focus();
+  }
+}
+
 function createExplorerRow(item, depth) {
   const isFolder = item.mimeType === FOLDER_MIME_TYPE;
   const row = document.createElement("button");
@@ -2793,6 +3097,7 @@ async function fetchAuthorizedGoogleAccount(token) {
 }
 
 function resetDriveContextForAccountChange() {
+  closeSearch(false);
   explorerGeneration += 1;
   explorerFolderLoads = new WeakMap();
   activeFileRevealGeneration += 1;
@@ -2947,6 +3252,7 @@ function switchGoogleAccount() {
 }
 
 function showReconnectDialog() {
+  closeSearch(false);
   if (!reconnectDialog.open) {
     reconnectDialog.showModal();
   }
@@ -3051,6 +3357,7 @@ window.addEventListener("load", () => {
     callback: handleTokenResponse,
   });
   driveClientReady = true;
+  searchButton.disabled = false;
   updateExplorerCreateButtons();
   updateAccountPanel();
   maybeStartSilentReconnect();
@@ -3105,6 +3412,27 @@ closeReconnectButton.addEventListener("click", () => reconnectDialog.close());
 cancelReconnectButton.addEventListener("click", () => reconnectDialog.close());
 newTabButton.addEventListener("click", () => createUntitledTab());
 saveButton.addEventListener("click", saveFile);
+searchButton.addEventListener("click", () => openSearch("filename"));
+closeSearchButton.addEventListener("click", () => closeSearch());
+filenameSearchMode.addEventListener("click", () => setSearchMode("filename"));
+contentSearchMode.addEventListener("click", () => setSearchMode("content"));
+searchInput.addEventListener("input", scheduleDriveSearch);
+searchInput.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeSearch();
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    updateSelectedSearchResult(selectedSearchIndex + 1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    updateSelectedSearchResult(selectedSearchIndex - 1);
+  } else if (event.key === "Enter" && selectedSearchIndex >= 0) {
+    event.preventDefault();
+    openSearchResult(searchMatches[selectedSearchIndex]);
+  }
+});
 explorerNewFileButton.addEventListener("click", () =>
   beginExplorerCreate("file")
 );
@@ -3114,12 +3442,26 @@ explorerNewFolderButton.addEventListener("click", () =>
 explorerRefreshButton.addEventListener("click", refreshExplorer);
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !searchPanel.hidden) {
+    event.preventDefault();
+    closeSearch();
+    return;
+  }
   if (!(event.ctrlKey || event.metaKey)) {
     return;
   }
 
   const key = event.key.toLowerCase();
-  if (key === "s") {
+  if (key === "p") {
+    event.preventDefault();
+    openSearch("filename");
+  } else if (key === "f" && event.shiftKey) {
+    event.preventDefault();
+    openSearch("content");
+  } else if (key === "/" && !searchPanel.hidden) {
+    event.preventDefault();
+    setSearchMode(searchMode === "filename" ? "content" : "filename");
+  } else if (key === "s") {
     event.preventDefault();
     saveFile();
   } else if (key === "n") {
@@ -3391,15 +3733,21 @@ async function saveExistingDriveFile(tab) {
 }
 
 async function driveFetch(url, options = {}) {
+  const token = accessToken;
+  const generation = authorizationGeneration;
   const response = await fetch(url, {
     ...options,
     headers: {
       ...options.headers,
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${token}`,
     },
   });
 
-  if (response.status === 401) {
+  if (
+    response.status === 401 &&
+    token === accessToken &&
+    generation === authorizationGeneration
+  ) {
     accessToken = null;
     connectedGoogleAccount = null;
     updateAccountPanel();

@@ -17,8 +17,36 @@
     <button id="explorerToggle" type="button" aria-controls="fileExplorer" aria-expanded="true">[=]</button>
     <span class="app-title">DRIVE.EDIT</span>
     <button id="saveButton" disabled>[S] SAVE</button>
+    <button id="searchButton" type="button" disabled>[P] SEARCH</button>
     <button id="settingsButton">[G] SETTINGS</button>
   </header>
+
+  <section id="searchPanel" class="search-panel" role="dialog" aria-label="Search Drive" hidden>
+    <div class="search-toolbar">
+      <div class="search-modes" aria-label="Search mode">
+        <button id="filenameSearchMode" type="button" aria-pressed="true">FILENAME</button>
+        <button id="contentSearchMode" type="button" aria-pressed="false">CONTENT</button>
+      </div>
+      <span class="search-shortcut">MOD+/ TOGGLE</span>
+      <button id="closeSearchButton" type="button" aria-label="Close search">X</button>
+    </div>
+    <input
+      id="searchInput"
+      class="search-input"
+      type="search"
+      role="combobox"
+      aria-label="Search Drive"
+      aria-autocomplete="list"
+      aria-controls="searchResults"
+      aria-expanded="false"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="SEARCH FILENAMES"
+    >
+    <div id="searchResults" class="search-results" role="listbox" aria-label="Drive search results">
+      <div class="search-message">TYPE TO SEARCH ALL DRIVE</div>
+    </div>
+  </section>
 
   <div class="workspace">
     <aside id="fileExplorer" aria-label="Google Drive file explorer">

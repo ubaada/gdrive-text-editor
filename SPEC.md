@@ -16,6 +16,7 @@ The product must provide:
 - A custom Google Drive file explorer.
 - A Monaco-based tabbed text editor.
 - Creation and saving of files and folders in Drive.
+- Drive-wide filename and indexed-content search.
 - Local recovery of unsaved work.
 - Protection against overwriting remotely changed content.
 - Drive revision listing, preview, and confirmed restoration.
@@ -48,7 +49,8 @@ Carbon White and Solar Sand are the reference screenshot themes.
 
 The viewport is divided into:
 
-1. A header containing `[=]`, `DRIVE.EDIT`, `[S] SAVE`, and `[G] SETTINGS`.
+1. A header containing `[=]`, `DRIVE.EDIT`, `[S] SAVE`, `[P] SEARCH`, and
+   `[G] SETTINGS`, with Search between Save and Settings.
 2. A workspace containing the left Drive sidebar and the editor pane.
 3. A footer containing filename state, operation status, cursor position, and
    document statistics.
@@ -216,6 +218,33 @@ operations are communicated through transient footer statuses.
 - If the destination disappears or becomes inaccessible, retain the operation,
   move its destination to My Drive, and allow retry.
 
+## Drive Search
+
+- Search opens as a floating panel centered near the top of the viewport. It
+  contains Filename and Content modes, a text input, and a result list beneath
+  the input.
+- The Search header button and `Ctrl/Cmd+P` open the panel in Filename mode.
+  `Ctrl/Cmd+Shift+F` opens it in Content mode. While open, `Ctrl/Cmd+/` toggles
+  between modes.
+- Search covers the connected user's complete Drive corpus rather than only the
+  selected or currently expanded folder.
+- Filename mode uses Drive's ordinary `name contains` query behavior. It is not
+  fuzzy and does not download or locally index all filenames.
+- Content mode uses Drive's indexed `fullText contains` behavior. Unquoted words
+  are combined as required terms; wrapping the complete query in double quotes
+  requests an indexed phrase match.
+- Results are paginated from Drive, sorted by filename, and limited to file types
+  the editor can attempt to open. Folders and Google Workspace-native files are
+  omitted.
+- Up and Down move the active result, Enter opens it through the normal tab load
+  flow, and Escape closes the panel and returns focus to the editor. Clicking a
+  result also opens it.
+- Search authorization, loading, empty, result-count, and failure states are
+  visible. Superseded responses and responses received after closing or changing
+  account must not replace current UI state.
+- Drive controls the full-text index. Results can reflect indexing delay and can
+  match indexed metadata as well as file contents.
+
 ## Saving And Remote-Change Protection
 
 - Save is unavailable while the active tab is loading, load-failed, saving,
@@ -357,8 +386,8 @@ while still allowing both theme choices to be configured.
 
 ## Status, Loading, And Statistics
 
-- The footer is the primary channel for authorization, loading, creation, save,
-  conflict, recovery, revision, and error statuses.
+- The footer is the primary channel for authorization, loading, search,
+  creation, save, conflict, recovery, revision, and error statuses.
 - File loading replaces the editor with an accessible `LOADING FILE` state and
   animated indicator. Load failure remains visible as `LOAD FAILED: <error>`.
 - Folder loading uses an inline form of the same indicator.
@@ -379,6 +408,8 @@ while still allowing both theme choices to be configured.
 - On small screens the preview action bar spans the editor width, hides its
   timestamp label, and gives equal space to Back and Restore.
 - Settings and recovery layouts must reflow without horizontal page scrolling.
+- The floating search panel remains within the viewport and its results remain
+  scrollable on desktop and mobile layouts.
 - Native controls, dialogs, tree items, status regions, and Files/History tabs
   retain meaningful accessible names and state. Open-file tabs currently do not
   implement a complete ARIA tab/tabpanel keyboard model.

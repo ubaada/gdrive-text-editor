@@ -5,7 +5,7 @@ async function installGoogleAuth(page) {
       body: `
         window.__googleAuthMock = {
           mode: sessionStorage.getItem("drive-edit-auth-mode") || "success",
-          delay: 0,
+          delay: Number(sessionStorage.getItem("drive-edit-auth-delay")) || 0,
           requestCount: 0,
           lastOptions: null,
         };
@@ -51,6 +51,7 @@ async function installGoogleAuth(page) {
     setDelay: (delay) =>
       page.evaluate((value) => {
         window.__googleAuthMock.delay = value;
+        sessionStorage.setItem("drive-edit-auth-delay", String(value));
       }, delay),
     requestCount: () =>
       page.evaluate(() => window.__googleAuthMock.requestCount),

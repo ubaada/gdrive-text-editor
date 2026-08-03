@@ -1,6 +1,7 @@
 const { createHash } = require("node:crypto");
 
 const DRIVE_URL = /^https:\/\/www\.googleapis\.com\/(upload\/)?drive\/v3\/files/;
+const DRIVES_URL = /^https:\/\/www\.googleapis\.com\/drive\/v3\/drives/;
 const ABOUT_URL = "https://www.googleapis.com/drive/v3/about";
 const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
@@ -10,6 +11,10 @@ function delay(milliseconds) {
 
 function checksum(content) {
   return createHash("md5").update(content).digest("hex");
+}
+
+function unescapeDriveQueryValue(value) {
+  return value.replace(/\\(.)/g, "$1");
 }
 
 function publicFile(file) {
@@ -33,9 +38,13 @@ function parseMultipart(request) {
 
 async function installDriveApi(page) {
   const files = new Map();
+  const sharedDrives = new Map();
   const revisions = new Map();
   const folderDelays = new Map();
   const folderListFailures = new Set();
+  const searchDelays = new Map();
+  const searchFailures = new Map();
+  const searchQueries = [];
   const fileDelays = new Map();
   const postUploadVersionDrifts = new Set();
   const restrictedRevisionDownloads = new Set();
@@ -46,6 +55,8 @@ async function installDriveApi(page) {
   };
   let aboutRequestCount = 0;
   let failNextAbout = false;
+  let failNextSearch = false;
+  let searchPageSize = null;
   let nextId = 1;
   let nextRevisionId = 1;
 
@@ -87,6 +98,7 @@ async function installDriveApi(page) {
     content = "",
     parentId = "root",
     mimeType = "text/plain",
+    driveId = null,
   }) {
     const file = {
       id,
@@ -97,6 +109,7 @@ async function installDriveApi(page) {
       md5Checksum: checksum(content),
       version: "1",
       modifiedTime: new Date().toISOString(),
+      ...(driveId ? { driveId } : {}),
     };
     files.set(id, file);
     addRevision(file);
@@ -110,6 +123,19 @@ async function installDriveApi(page) {
       return route.fulfill({ status: 500, body: "Account lookup failed" });
     }
     return route.fulfill({ json: { user: account } });
+  });
+
+  await page.route(DRIVES_URL, async (route) => {
+    const url = new URL(route.request().url());
+    const pageSize = Number(url.searchParams.get("pageSize")) || 100;
+    const start = Number(url.searchParams.get("pageToken")) || 0;
+    const drives = [...sharedDrives.values()];
+    const pageDrives = drives.slice(start, start + pageSize);
+    const nextPageToken =
+      start + pageSize < drives.length
+        ? String(start + pageSize)
+        : undefined;
+    return route.fulfill({ json: { drives: pageDrives, nextPageToken } });
   });
 
   await page.route(DRIVE_URL, async (route) => {
@@ -181,7 +207,62 @@ async function installDriveApi(page) {
     }
 
     if (request.method() === "GET" && !id) {
-      const parentId = url.searchParams.get("q")?.match(/'([^']+)' in parents/)?.[1];
+      const query = url.searchParams.get("q") || "";
+      const parentId = query.match(/'([^']+)' in parents/)?.[1];
+      if (!parentId) {
+        searchQueries.push(query);
+        if (failNextSearch) {
+          failNextSearch = false;
+          return route.fulfill({ status: 500, body: "Search failed" });
+        }
+        const nameTerm = query.match(
+          /name contains '((?:\\.|[^'])*)'/
+        )?.[1];
+        const contentTerms = [...query.matchAll(
+          /fullText contains '((?:\\.|[^'])*)'/g
+        )].map((match) => unescapeDriveQueryValue(match[1]));
+        const normalizedNameTerm = nameTerm
+          ? unescapeDriveQueryValue(nameTerm).toLocaleLowerCase()
+          : null;
+        const matches = [...files.values()]
+          .filter((file) => {
+            const corpus = url.searchParams.get("corpora") || "user";
+            return corpus === "drive"
+              ? file.driveId === url.searchParams.get("driveId")
+              : !file.driveId;
+          })
+          .filter((file) => {
+            const name = file.name.toLocaleLowerCase();
+            if (normalizedNameTerm !== null) {
+              return name.includes(normalizedNameTerm);
+            }
+            const fullText = `${file.name}\n${file.content || ""}`.toLocaleLowerCase();
+            return contentTerms.every((term) => {
+              const normalized = term.toLocaleLowerCase();
+              return normalized.startsWith('"') && normalized.endsWith('"')
+                ? fullText.includes(normalized.slice(1, -1))
+                : fullText.includes(normalized);
+            });
+          })
+          .map(publicFile);
+        const searchTerm = normalizedNameTerm || contentTerms[0] || "";
+        const normalizedSearchTerm = searchTerm.replace(/^"|"$/g, "");
+        await delay(searchDelays.get(normalizedSearchTerm) || 0);
+        const failureStatus = searchFailures.get(normalizedSearchTerm);
+        if (failureStatus) {
+          searchFailures.delete(normalizedSearchTerm);
+          return route.fulfill({ status: failureStatus, body: "Search failed" });
+        }
+        const pageSize =
+          searchPageSize || Number(url.searchParams.get("pageSize")) || 100;
+        const start = Number(url.searchParams.get("pageToken")) || 0;
+        const pageFiles = matches.slice(start, start + pageSize);
+        const nextPageToken =
+          start + pageSize < matches.length
+            ? String(start + pageSize)
+            : undefined;
+        return route.fulfill({ json: { files: pageFiles, nextPageToken } });
+      }
       if (folderListFailures.delete(parentId)) {
         return route.fulfill({ status: 500, body: "Folder list failed" });
       }
@@ -260,6 +341,11 @@ async function installDriveApi(page) {
   return {
     addFile,
     addFolder,
+    addSharedDrive: (id, name = id) => {
+      const drive = { id, name };
+      sharedDrives.set(id, drive);
+      return drive;
+    },
     get: (id) => files.get(id),
     findByName: (name) => [...files.values()].find((file) => file.name === name),
     setFolderDelay: (id, milliseconds) => folderDelays.set(id, milliseconds),
@@ -270,6 +356,17 @@ async function installDriveApi(page) {
     restrictRevisionDownloads: (id) => restrictedRevisionDownloads.add(id),
     failNextUpload: (id) => uploadFailures.add(id),
     failNextFolderList: (id) => folderListFailures.add(id),
+    failNextSearch: () => {
+      failNextSearch = true;
+    },
+    setSearchDelay: (query, milliseconds) =>
+      searchDelays.set(query.toLocaleLowerCase(), milliseconds),
+    failSearch: (query, status = 500) =>
+      searchFailures.set(query.toLocaleLowerCase(), status),
+    searchQueries: () => [...searchQueries],
+    setSearchPageSize: (pageSize) => {
+      searchPageSize = pageSize;
+    },
     failNextAbout: () => {
       failNextAbout = true;
     },
