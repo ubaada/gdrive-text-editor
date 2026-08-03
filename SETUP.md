@@ -1,67 +1,48 @@
-# Deployment Setup
+# Infrastructure Setup
 
-This guide deploys the app from GitHub Actions to a private Google Cloud Run service.
+This guide assumes you already have a checkout of this repository. It covers:
+
+1. Building the supplied Docker image and deploying it privately to Google
+   Cloud Run
+2. Optionally configuring a fork to deploy through the supplied GitHub Actions
+   workflow
+
+It does not cover application development or local test setup.
 
 ## Prerequisites
 
-You need:
+For a direct deployment, you need:
 
 - A Google Cloud account with billing enabled
-- A Google Cloud project
-- A GitHub repository containing this application
-- Permission to administer both the GCP project and GitHub repository
-- Google Cloud Shell or a local installation of `gcloud`
+- A Google Cloud project you can administer
+- `gcloud` and Docker
+- A Google account that will be allowed to use the deployed application
 
-Set these values before running the commands:
+Set the deployment values:
 
 ```bash
 export PROJECT_ID="YOUR_GCP_PROJECT_ID"
 export REGION="YOUR_GCP_REGION"
-export GITHUB_REPO="GITHUB_USERNAME/REPOSITORY_NAME"
-
 export SERVICE_NAME="drive-text-editor"
 export ARTIFACT_REPOSITORY="drive-text-editor"
-export DEPLOYER_NAME="github-deployer"
-export WIF_POOL_ID="github-actions"
-export WIF_PROVIDER_ID="github"
-```
+export IMAGE_NAME="drive-text-editor"
+export RUNTIME_NAME="drive-text-editor-runtime"
 
-Example region:
-
-```bash
-export REGION="australia-southeast1"
-```
-
-Select the project:
-
-```bash
+gcloud auth login
 gcloud config set project "$PROJECT_ID"
 ```
 
-Confirm it:
+Skip `gcloud auth login` when Cloud Shell already has the correct account. For
+example, a region might be `australia-southeast1`.
 
-```bash
-gcloud config get-value project
-```
+## Prepare Google Cloud
 
-## 1. Link billing
-
-In Google Cloud Console:
-
-1. Open **Billing**
-2. Select **My projects**
-3. Link the project to a billing account
-
-Cloud Run can scale to zero, but Google Cloud generally requires billing to be enabled.
-
-## 2. Enable required APIs
-
-Run:
+Link the project to a billing account in **Billing -> My projects**, then enable
+the required APIs:
 
 ```bash
 gcloud services enable \
   drive.googleapis.com \
-  picker.googleapis.com \
   run.googleapis.com \
   artifactregistry.googleapis.com \
   iam.googleapis.com \
@@ -72,131 +53,58 @@ gcloud services enable \
   serviceusage.googleapis.com
 ```
 
-The relevant services are:
+The browser calls the Drive API directly. Cloud Run only serves the static
+HTML, CSS, and JavaScript in the image.
 
-- **Google Drive API** — reads and modifies Drive files
-- **Google Picker API** — displays the Google Drive file picker
-- **Cloud Run API** — runs the application container
-- **Artifact Registry API** — stores container images
-- **IAM APIs** — manage deployment identities and permissions
-- **Security Token Service** — exchanges GitHub OIDC tokens for temporary GCP credentials
-- **IAP API** — protects the browser application with Google sign-in
+## Configure Drive OAuth
 
-## 3. Configure the Google OAuth consent screen
+### Consent screen
 
-In Google Cloud Console:
+In **Google Auth Platform**:
 
-1. Open **Google Auth Platform**
-2. Open **Branding**
-3. Configure:
-   - App name: `Personal Drive Text Editor`
-   - User support email: your email
-   - Developer contact email: your email
-4. Open **Audience**
-5. Select **External**
-6. Leave the application in **Testing**
-7. Add every Google account that should use the application under **Test users**
+1. Open **Branding** and provide the app name, support email, and developer
+   contact email.
+2. Open **Audience** and select **External**.
+3. Leave the app in **Testing** for a private deployment.
+4. Add every Google account that should use the app as a test user.
 
-## 4. Declare the Drive scope
-
-Open:
-
-**Google Auth Platform → Data Access → Add or remove scopes**
-
-For full Drive browsing and file management, add:
+Under **Data Access**, declare this scope:
 
 ```text
 https://www.googleapis.com/auth/drive
 ```
 
-This permits the application to:
+The custom explorer needs full Drive access to list ordinary existing files.
+The narrower `drive.file` scope requires a Picker-based selection flow, which
+this application does not implement.
 
-- List Drive files and folders
-- Read file contents
-- Create files and folders
-- Edit and rename files
-- Move files
-- Delete files
+Full Drive access is a restricted OAuth scope. Testing mode is suitable for a
+private deployment with named test users, but Google applies testing limits and
+users may need to authorize again. Publishing for broader use can require
+Google verification and additional security review.
 
-The same scope must be requested in `public/app.js`:
+### Browser client
 
-```js
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
-```
-
-For a more restricted per-file application, use this instead:
-
-```text
-https://www.googleapis.com/auth/drive.file
-```
-
-`drive.file` limits access to files selected through Google Picker or created by the application.
-
-## 5. Create the browser OAuth client
-
-Open:
-
-**Google Auth Platform → Clients → Create client**
-
-Configure:
+In **Google Auth Platform -> Clients**, create a client with:
 
 ```text
 Application type: Web application
-Name: Personal Drive Text Editor Web
+Name: Drive Text Editor Web
 ```
 
-The Cloud Run URL does not exist yet, so the authorized JavaScript origin can initially be left empty.
-
-Create the client and record the:
-
-```text
-OAuth client ID
-```
-
-Do not put the OAuth client secret in the application or GitHub repository. This application uses the browser OAuth token flow and does not require the client secret.
-
-## 6. Create the Google Picker API key
-
-Open:
-
-**APIs & Services → Credentials → Create credentials → API key**
-
-Name it:
-
-```text
-drive-text-editor-picker-key
-```
-
-Configure:
-
-```text
-API restrictions:
-  Restrict key
-  Google Picker API
-```
-
-Leave the website restriction unset temporarily because the Cloud Run URL does not exist yet.
-
-Record the API key.
-
-## 7. Get the GCP project number
-
-Run:
+The Cloud Run URL does not exist yet, so its authorized JavaScript origin can
+be added after the first deployment. Record the OAuth client ID:
 
 ```bash
-export PROJECT_NUMBER="$(
-  gcloud projects describe "$PROJECT_ID" \
-    --format="value(projectNumber)"
-)"
-
-echo "$PROJECT_NUMBER"
+export GOOGLE_CLIENT_ID="YOUR_WEB_OAUTH_CLIENT_ID"
 ```
 
-Record this value.
+The browser flow does not use the OAuth client secret. Never put that secret in
+the image, repository, or GitHub Actions.
 
-## 8. Create the Artifact Registry repository
+## Create The Image Repository
 
-Run:
+Create an Artifact Registry Docker repository:
 
 ```bash
 gcloud artifacts repositories create "$ARTIFACT_REPOSITORY" \
@@ -205,106 +113,282 @@ gcloud artifacts repositories create "$ARTIFACT_REPOSITORY" \
   --description="Container images for Drive Text Editor"
 ```
 
-If it already exists, this command can be skipped.
+Skip this command if the repository already exists.
 
-## 9. Create the GitHub deployment service account
+Configure Docker authentication:
 
-Run:
+```bash
+gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+```
+
+## Create The Runtime Identity
+
+The static nginx container does not need permission to call Google Cloud APIs.
+Create a dedicated service account without project roles:
+
+```bash
+gcloud iam service-accounts create "$RUNTIME_NAME" \
+  --display-name="Drive Text Editor runtime"
+
+export RUNTIME_SERVICE_ACCOUNT="${RUNTIME_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+```
+
+Skip the create command if the account already exists.
+
+## Build And Deploy
+
+The Dockerfile accepts the browser OAuth client ID as a build argument. The
+client ID is a public browser identifier, not a client secret. Build and push an
+image tagged with a unique deployment tag:
+
+```bash
+export IMAGE_TAG="$(date -u +%Y%m%d-%H%M%S)"
+export IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+docker build \
+  --build-arg "GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}" \
+  --tag "$IMAGE_URI" \
+  .
+docker push "$IMAGE_URI"
+```
+
+Deploy a private Cloud Run service:
+
+```bash
+gcloud run deploy "$SERVICE_NAME" \
+  --project="$PROJECT_ID" \
+  --region="$REGION" \
+  --image="$IMAGE_URI" \
+  --service-account="$RUNTIME_SERVICE_ACCOUNT" \
+  --no-allow-unauthenticated \
+  --min-instances=0 \
+  --max-instances=1 \
+  --cpu=1 \
+  --memory=256Mi
+```
+
+Get the service URL:
+
+```bash
+export CLOUD_RUN_URL="$(
+  gcloud run services describe "$SERVICE_NAME" \
+    --project="$PROJECT_ID" \
+    --region="$REGION" \
+    --format="value(status.url)"
+)"
+
+echo "$CLOUD_RUN_URL"
+```
+
+The private service returns 403 to an ordinary browser until IAP is enabled.
+
+## Add The Browser Origin
+
+Open the web OAuth client in **Google Auth Platform -> Clients**. Add the exact
+Cloud Run URL under **Authorized JavaScript origins**.
+
+Requirements:
+
+- Include `https://`.
+- Do not include a trailing slash.
+- Do not include a path.
+- Do not add it as a redirect URI.
+
+Example:
+
+```text
+https://drive-text-editor-example.a.run.app
+```
+
+## Enable Private Browser Access
+
+In the Google Cloud console:
+
+1. Open **Cloud Run** and select the service.
+2. Open **Security**.
+3. Under **Require authentication**, select **Identity-Aware Proxy (IAP)**.
+4. Keep unauthenticated access disabled and save.
+
+The console enables IAP and grants its service agent permission to invoke the
+Cloud Run service.
+
+For a project without a Google Cloud organization, or for users outside the
+project's organization, complete IAP's one-time external-user configuration:
+
+1. Under the service's IAP policy, select **Configure in IAP**.
+2. Configure an External consent screen.
+3. Let IAP auto-generate credentials, or configure a dedicated IAP OAuth
+   client.
+
+The IAP OAuth client is separate from the browser client used for Drive access.
+Never put an IAP client secret in `public/config.js` or GitHub Actions.
+
+Grant each user access:
+
+```bash
+gcloud iap web add-iam-policy-binding \
+  --project="$PROJECT_ID" \
+  --resource-type=cloud-run \
+  --service="$SERVICE_NAME" \
+  --region="$REGION" \
+  --member="user:USER_EMAIL_ADDRESS" \
+  --role="roles/iap.httpsResourceAccessor"
+```
+
+While the Drive OAuth app remains in Testing, the same account must also be a
+test user under **Google Auth Platform -> Audience**.
+
+IAP and Drive OAuth enforce separate permissions:
+
+- IAP controls who may open the application.
+- Drive OAuth controls who may grant the browser access to their Drive.
+
+## Verify The Deployment
+
+Open the Cloud Run URL in a browser. The expected sequence is:
+
+1. IAP asks you to sign in.
+2. Cloud Run returns the editor.
+3. Clicking **REFRESH** in Files mode starts browser OAuth.
+4. Google displays the Drive consent screen.
+5. The custom explorer lists the user's files and folders.
+
+The Drive access token remains in browser memory. Cloud Run does not receive or
+store it.
+
+## Optional Cleanup Policy
+
+Each deployment pushes a new image. To retain the newest three versions and
+delete older versions, create a temporary policy file:
+
+```bash
+cat > cleanup-policy.json <<'EOF'
+[
+  {
+    "name": "keep-recent",
+    "action": { "type": "Keep" },
+    "mostRecentVersions": { "keepCount": 3 }
+  },
+  {
+    "name": "delete-old",
+    "action": { "type": "Delete" },
+    "condition": {
+      "tagState": "any",
+      "olderThan": "86400s"
+    }
+  }
+]
+EOF
+
+gcloud artifacts repositories set-cleanup-policies \
+  "$ARTIFACT_REPOSITORY" \
+  --project="$PROJECT_ID" \
+  --location="$REGION" \
+  --policy="cleanup-policy.json"
+
+rm cleanup-policy.json
+```
+
+## Optional GitHub Actions Setup
+
+This section is only for maintainers who want their fork to deploy on pushes to
+`main`. The repository already contains `.github/workflows/deploy.yml`; do not
+create another workflow.
+
+### Additional values
+
+Set:
+
+```bash
+export DEPLOYER_NAME="github-deployer"
+export WIF_POOL_ID="github-actions"
+export WIF_PROVIDER_ID="github"
+export GITHUB_REPOSITORY_ID="NUMERIC_GITHUB_REPOSITORY_ID"
+export GITHUB_OWNER_ID="NUMERIC_GITHUB_OWNER_ID"
+```
+
+Find the immutable `id` and `owner.id` values at:
+
+```text
+https://api.github.com/repos/GITHUB_USERNAME/REPOSITORY_NAME
+```
+
+Numeric IDs are used for deployment trust because repository and owner names
+can be renamed or reused. Deployment credentials are also restricted to the
+`main` branch.
+
+Get the Google Cloud project number:
+
+```bash
+export PROJECT_NUMBER="$(
+  gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)"
+)"
+```
+
+### Deployment service account
+
+Create the GitHub deployment identity:
 
 ```bash
 gcloud iam service-accounts create "$DEPLOYER_NAME" \
   --display-name="GitHub Actions deployer"
-```
 
-Set its email:
-
-```bash
 export DEPLOYER_EMAIL="${DEPLOYER_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-
-echo "$DEPLOYER_EMAIL"
 ```
 
-## 10. Grant deployment permissions
-
-Allow the deployment service account to deploy Cloud Run revisions:
+Grant only the permissions needed to push images and deploy revisions:
 
 ```bash
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:${DEPLOYER_EMAIL}" \
   --role="roles/run.admin"
-```
 
-Allow it to upload container images:
-
-```bash
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:${DEPLOYER_EMAIL}" \
   --role="roles/artifactregistry.writer"
-```
 
-Allow deployment tools to consume enabled project services:
-
-```bash
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:${DEPLOYER_EMAIL}" \
   --role="roles/serviceusage.serviceUsageConsumer"
-```
 
-## 11. Allow the deployer to use the Cloud Run runtime identity
-
-The default Cloud Run runtime service account is:
-
-```bash
-export RUNTIME_SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-```
-
-Permit the GitHub deployer to attach it to Cloud Run revisions:
-
-```bash
 gcloud iam service-accounts add-iam-policy-binding \
   "$RUNTIME_SERVICE_ACCOUNT" \
   --member="serviceAccount:${DEPLOYER_EMAIL}" \
   --role="roles/iam.serviceAccountUser"
 ```
 
-This does not give the GitHub deployer the runtime service account's permissions. It permits the deployer to create a Cloud Run revision that runs as that identity.
+The final binding permits the deployer to attach the runtime identity to a
+revision; it does not grant the runtime identity's permissions to the deployer.
 
-## 12. Create the Workload Identity Pool
+### Workload Identity Federation
 
-Workload Identity Federation allows GitHub Actions to authenticate without storing a permanent Google service-account key.
-
-Create the pool:
+Create a pool and GitHub OIDC provider:
 
 ```bash
 gcloud iam workload-identity-pools create "$WIF_POOL_ID" \
+  --project="$PROJECT_ID" \
   --location="global" \
   --display-name="GitHub Actions"
-```
 
-Create the GitHub OIDC provider:
-
-```bash
 gcloud iam workload-identity-pools providers create-oidc \
   "$WIF_PROVIDER_ID" \
+  --project="$PROJECT_ID" \
   --location="global" \
   --workload-identity-pool="$WIF_POOL_ID" \
   --display-name="GitHub" \
   --issuer-uri="https://token.actions.githubusercontent.com" \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
-  --attribute-condition="assertion.repository=='${GITHUB_REPO}'"
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id,attribute.ref=assertion.ref" \
+  --attribute-condition="assertion.repository_id=='${GITHUB_REPOSITORY_ID}' && assertion.repository_owner_id=='${GITHUB_OWNER_ID}' && assertion.ref=='refs/heads/main'"
 ```
 
-The condition limits authentication to the specified GitHub repository.
-
-## 13. Allow GitHub to impersonate the deployer
-
-Run:
+Allow only that repository ID to impersonate the deployment account:
 
 ```bash
 gcloud iam service-accounts add-iam-policy-binding \
   "$DEPLOYER_EMAIL" \
+  --project="$PROJECT_ID" \
   --role="roles/iam.workloadIdentityUser" \
-  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL_ID}/attribute.repository/${GITHUB_REPO}"
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL_ID}/attribute.repository_id/${GITHUB_REPOSITORY_ID}"
 ```
 
 Build the provider identifier:
@@ -313,523 +397,96 @@ Build the provider identifier:
 export WIF_PROVIDER="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL_ID}/providers/${WIF_PROVIDER_ID}"
 ```
 
-Print the values needed by GitHub:
+### GitHub configuration
 
-```bash
-echo "WIF_PROVIDER=${WIF_PROVIDER}"
-echo "DEPLOYER_SERVICE_ACCOUNT=${DEPLOYER_EMAIL}"
-```
-
-## 14. Add GitHub Actions secrets
-
-In the GitHub repository, open:
-
-**Settings → Secrets and variables → Actions → Repository secrets**
-
-Create:
+Add these repository secrets under **Settings -> Secrets and variables ->
+Actions**:
 
 ```text
 GOOGLE_CLIENT_ID
-GOOGLE_PICKER_API_KEY
-GOOGLE_PROJECT_NUMBER
 WIF_PROVIDER
 DEPLOYER_SERVICE_ACCOUNT
 ```
 
-Values:
+Use these values:
 
 ```text
 GOOGLE_CLIENT_ID
-  OAuth browser client ID
-
-GOOGLE_PICKER_API_KEY
-  Restricted Google Picker API key
-
-GOOGLE_PROJECT_NUMBER
-  Numeric GCP project number
+  Web OAuth client ID used by the browser
 
 WIF_PROVIDER
-  Full Workload Identity Provider identifier
+  Full provider identifier stored in $WIF_PROVIDER
 
 DEPLOYER_SERVICE_ACCOUNT
-  GitHub deployment service-account email
+  Service-account email stored in $DEPLOYER_EMAIL
 ```
 
-The WIF provider and service-account email are identifiers rather than credentials, so they may alternatively be stored as repository variables. The workflow supplied with this repository expects repository secrets unless changed.
+`WIF_PROVIDER` and `DEPLOYER_SERVICE_ACCOUNT` are identifiers rather than
+credentials, but the supplied workflow reads them from repository secrets.
 
-## 15. Check the application configuration template
-
-`public/config.js` should contain placeholders rather than real values:
-
-```js
-window.APP_CONFIG = {
-  clientId: "__GOOGLE_CLIENT_ID__",
-  apiKey: "__GOOGLE_PICKER_API_KEY__",
-  appId: "__GOOGLE_PROJECT_NUMBER__",
-};
-```
-
-The GitHub Actions workflow replaces these placeholders during the build.
-
-Make sure `.gitignore` includes:
-
-```gitignore
-.env
-.env.*
-!.env.example
-credentials/
-secrets/
-gha-creds-*.json
-```
-
-Do not commit:
-
-- OAuth client secrets
-- Service-account JSON keys
-- OAuth access or refresh tokens
-- GitHub personal access tokens
-
-## 16. Configure the GitHub Actions workflow
-
-Create:
+Update the deployment-specific values in the workflow's `env` block:
 
 ```text
-.github/workflows/deploy.yml
+PROJECT_ID
+REGION
+REPOSITORY
+SERVICE
+IMAGE
+RUNTIME_SERVICE_ACCOUNT
 ```
 
-Use:
+The workflow already:
 
-```yaml
-name: Build and deploy
+1. Passes `GOOGLE_CLIENT_ID` to the supplied Dockerfile as a build argument.
+2. Authenticates through Workload Identity Federation.
+3. Builds and pushes the supplied Docker image.
+4. Deploys a private Cloud Run revision with the dedicated runtime identity.
 
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
+It runs on pushes to `main` and through manual `workflow_dispatch` runs of the
+`main` branch.
 
-permissions:
-  contents: read
-  id-token: write
-
-env:
-  PROJECT_ID: YOUR_GCP_PROJECT_ID
-  REGION: YOUR_GCP_REGION
-  REPOSITORY: drive-text-editor
-  SERVICE: drive-text-editor
-  IMAGE: drive-text-editor
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Generate browser configuration
-        env:
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_PICKER_API_KEY: ${{ secrets.GOOGLE_PICKER_API_KEY }}
-          GOOGLE_PROJECT_NUMBER: ${{ secrets.GOOGLE_PROJECT_NUMBER }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          required = [
-              "GOOGLE_CLIENT_ID",
-              "GOOGLE_PICKER_API_KEY",
-              "GOOGLE_PROJECT_NUMBER",
-          ]
-
-          missing = [name for name in required if not os.environ.get(name)]
-
-          if missing:
-              raise RuntimeError(
-                  "Missing GitHub secrets: " + ", ".join(missing)
-              )
-
-          config = {
-              "clientId": os.environ["GOOGLE_CLIENT_ID"],
-              "apiKey": os.environ["GOOGLE_PICKER_API_KEY"],
-              "appId": os.environ["GOOGLE_PROJECT_NUMBER"],
-          }
-
-          Path("public/config.js").write_text(
-              "window.APP_CONFIG = " + json.dumps(config) + ";\n",
-              encoding="utf-8",
-          )
-          PY
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.DEPLOYER_SERVICE_ACCOUNT }}
-
-      - name: Install Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v3
-
-      - name: Configure Docker authentication
-        run: |
-          gcloud auth configure-docker \
-            "${REGION}-docker.pkg.dev" \
-            --quiet
-
-      - name: Build and push image
-        env:
-          IMAGE_URI: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }}
-        run: |
-          docker build --tag "$IMAGE_URI" .
-          docker push "$IMAGE_URI"
-
-      - name: Deploy to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v3
-        with:
-          service: ${{ env.SERVICE }}
-          region: ${{ env.REGION }}
-          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }}
-          flags: >-
-            --no-allow-unauthenticated
-            --min-instances=0
-            --max-instances=1
-            --cpu=1
-            --memory=256Mi
-```
-
-Replace:
-
-```text
-YOUR_GCP_PROJECT_ID
-YOUR_GCP_REGION
-```
-
-Commit and push:
-
-```bash
-git add .
-git commit -m "Configure Google Cloud deployment"
-git push
-```
-
-A push to `main` triggers the workflow immediately. It can also be run manually from the GitHub **Actions** tab.
-
-## 17. Get the Cloud Run URL
-
-After deployment succeeds, run:
-
-```bash
-gcloud run services describe "$SERVICE_NAME" \
-  --region="$REGION" \
-  --format="value(status.url)"
-```
-
-Save the returned URL:
-
-```bash
-export CLOUD_RUN_URL="$(
-  gcloud run services describe "$SERVICE_NAME" \
-    --region="$REGION" \
-    --format="value(status.url)"
-)"
-
-echo "$CLOUD_RUN_URL"
-```
-
-## 18. Add the OAuth JavaScript origin
-
-Open:
-
-**Google Auth Platform → Clients → the web OAuth client**
-
-Under **Authorized JavaScript origins**, add the exact Cloud Run origin:
-
-```text
-https://YOUR_CLOUD_RUN_HOSTNAME
-```
-
-Requirements:
-
-- Include `https://`
-- Do not include a trailing slash
-- Do not put it under redirect URIs
-- Use the exact origin returned by Cloud Run
-
-Example form:
-
-```text
-https://drive-text-editor-example.a.run.app
-```
-
-## 19. Restrict the Picker API key
-
-Open:
-
-**APIs & Services → Credentials → drive-text-editor-picker-key**
-
-Set:
-
-```text
-Application restrictions:
-  Websites
-```
-
-Add:
-
-```text
-https://YOUR_CLOUD_RUN_HOSTNAME/*
-```
-
-Keep:
-
-```text
-API restrictions:
-  Google Picker API only
-```
-
-The API key is visible in browser JavaScript by design. These restrictions prevent it from being reused from unrelated websites or with unrelated APIs.
-
-## 20. Enable IAP for private browser access
-
-In Google Cloud Console:
-
-1. Open **Cloud Run**
-2. Select the deployed service
-3. Open **Security**
-4. Enable **Identity-Aware Proxy**
-5. Keep unauthenticated access disabled
-
-IAP presents a normal Google sign-in flow before forwarding requests to the Cloud Run container.
-
-## 21. Grant users access through IAP
-
-For each Google account that should access the application, run:
-
-```bash
-gcloud iap web add-iam-policy-binding \
-  --resource-type=cloud-run \
-  --service="$SERVICE_NAME" \
-  --region="$REGION" \
-  --member="user:USER_EMAIL_ADDRESS" \
-  --role="roles/iap.httpsResourceAccessor"
-```
-
-Example placeholder:
-
-```bash
-gcloud iap web add-iam-policy-binding \
-  --resource-type=cloud-run \
-  --service="$SERVICE_NAME" \
-  --region="$REGION" \
-  --member="user:user@example.com" \
-  --role="roles/iap.httpsResourceAccessor"
-```
-
-The role is displayed in the console as:
-
-```text
-IAP-Secured Web App User
-```
-
-If the OAuth app remains in Testing, also add that account under:
-
-**Google Auth Platform → Audience → Test users**
-
-IAP access and OAuth test-user access are separate:
-
-- IAP controls who may open the Cloud Run application
-- OAuth controls who may grant the application access to their Drive
-
-## 22. Add an Artifact Registry cleanup policy
-
-Each deployment pushes a new image version. Configure cleanup so old versions do not accumulate indefinitely.
-
-Create a temporary policy file:
-
-```bash
-cat > cleanup-policy.json <<'EOF'
-[
-  {
-    "name": "keep-recent",
-    "action": {
-      "type": "Keep"
-    },
-    "mostRecentVersions": {
-      "keepCount": 3
-    }
-  },
-  {
-    "name": "delete-old",
-    "action": {
-      "type": "Delete"
-    },
-    "condition": {
-      "tagState": "any",
-      "olderThan": "86400s"
-    }
-  }
-]
-EOF
-```
-
-Apply it:
-
-```bash
-gcloud artifacts repositories set-cleanup-policies \
-  "$ARTIFACT_REPOSITORY" \
-  --location="$REGION" \
-  --policy="cleanup-policy.json"
-```
-
-Delete the temporary local file:
-
-```bash
-rm cleanup-policy.json
-```
-
-This keeps the newest three versions and allows older versions to be removed.
-
-## 23. Test the deployment
-
-Open the Cloud Run URL in a browser.
-
-Expected sequence:
-
-1. IAP asks you to sign in
-2. IAP verifies that your account has `roles/iap.httpsResourceAccessor`
-3. Cloud Run returns the editor
-4. Clicking **Open from Drive** starts browser OAuth
-5. Google displays the Drive consent screen
-6. Google Picker opens
-7. The browser calls the Drive API using the user's short-lived OAuth token
-
-The Drive access token stays in browser memory. Cloud Run only serves the static application files and does not need to receive or store the Drive token.
-
-## 24. Troubleshooting
-
-### IAP says access is denied
-
-Confirm the user has the IAP role:
-
-```bash
-gcloud iap web add-iam-policy-binding \
-  --resource-type=cloud-run \
-  --service="$SERVICE_NAME" \
-  --region="$REGION" \
-  --member="user:USER_EMAIL_ADDRESS" \
-  --role="roles/iap.httpsResourceAccessor"
-```
-
-Wait one or two minutes for IAM propagation.
+## Troubleshooting
 
 ### OAuth reports `origin_mismatch`
 
-Add the exact Cloud Run origin to:
+Add the exact Cloud Run origin to the web OAuth client's **Authorized
+JavaScript origins**. Do not add a path or trailing slash.
 
-```text
-Google Auth Platform
-→ Clients
-→ Authorized JavaScript origins
-```
+### OAuth is restricted to test users
 
-Do not add a path or trailing slash.
+Add the account under **Google Auth Platform -> Audience -> Test users**.
 
-### OAuth says the app is restricted to test users
+### IAP denies access
 
-Add the account under:
-
-```text
-Google Auth Platform
-→ Audience
-→ Test users
-```
-
-### Google Picker reports an API-key or referrer error
-
-Verify that the Picker API key permits:
-
-```text
-https://YOUR_CLOUD_RUN_HOSTNAME/*
-```
-
-and is restricted to:
-
-```text
-Google Picker API
-```
+Confirm the user has `roles/iap.httpsResourceAccessor` on the Cloud Run IAP
+resource. For outside-organization users, also complete the one-time IAP OAuth
+configuration.
 
 ### GitHub authentication fails
 
-Verify these repository secrets:
+Confirm that:
 
-```text
-WIF_PROVIDER
-DEPLOYER_SERVICE_ACCOUNT
-```
+- `WIF_PROVIDER` and `DEPLOYER_SERVICE_ACCOUNT` contain the expected values.
+- The provider condition contains the current numeric `repository_id` and
+  `repository_owner_id` values.
+- The provider condition requires `refs/heads/main`.
+- The repository binding uses the current numeric `repository_id`.
 
-Confirm that the Workload Identity Provider condition matches the exact repository slug:
+### Deployment cannot use the runtime service account
 
-```text
-GITHUB_USERNAME/REPOSITORY_NAME
-```
-
-Repository names and GitHub usernames are case-sensitive in identity claims.
-
-### Cloud Run deployment cannot act as the runtime service account
-
-Reapply:
-
-```bash
-gcloud iam service-accounts add-iam-policy-binding \
-  "$RUNTIME_SERVICE_ACCOUNT" \
-  --member="serviceAccount:${DEPLOYER_EMAIL}" \
-  --role="roles/iam.serviceAccountUser"
-```
+Reapply the `roles/iam.serviceAccountUser` binding on
+`$RUNTIME_SERVICE_ACCOUNT` for `$DEPLOYER_EMAIL`.
 
 ### Cloud Run returns 403 before IAP is enabled
 
-A private IAM-protected Cloud Run service does not automatically receive an identity token from an ordinary browser request. Enable IAP for normal interactive browser sign-in.
+This is expected for a private IAM-protected service. Enable IAP for normal
+interactive browser sign-in.
 
-## Security summary
+## Security Summary
 
-The deployed architecture is:
-
-```text
-Browser
-   │
-   │ Google sign-in
-   ▼
-Identity-Aware Proxy
-   │
-   │ authorized users only
-   ▼
-Private Cloud Run service
-   │
-   │ HTML, CSS and JavaScript
-   ▼
-Browser application
-   │
-   │ user's short-lived OAuth token
-   ▼
-Google Drive API
-```
-
-GitHub deployment authentication is:
-
-```text
-GitHub Actions
-   │
-   │ short-lived GitHub OIDC token
-   ▼
-GCP Workload Identity Provider
-   │
-   │ repository identity verified
-   ▼
-GitHub deployment service account
-   ├── upload image to Artifact Registry
-   └── deploy revision to Cloud Run
-```
-
-No permanent GCP service-account key is stored in GitHub.
+- Cloud Run serves static files and does not receive Drive tokens or contents.
+- Browser OAuth access tokens remain in browser memory.
+- The runtime service account has no project roles.
+- GitHub Actions uses short-lived OIDC credentials instead of a service-account
+  key.
+- IAP and Drive OAuth independently restrict access.
