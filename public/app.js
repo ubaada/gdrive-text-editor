@@ -144,6 +144,7 @@ const DEFAULT_THEME_PREFERENCES = {
   uiFontSize: 14,
   editorFont: "gt-america-mono",
   editorFontSize: 14,
+  rulers: [],
 };
 const FONT_OPTIONS = [
   {
@@ -244,10 +245,12 @@ const closeSettingsButton = document.getElementById("closeSettingsButton");
 const appearanceSectionButton = document.getElementById(
   "appearanceSectionButton"
 );
+const editorSectionButton = document.getElementById("editorSectionButton");
 const accountSectionButton = document.getElementById("accountSectionButton");
 const appearanceSettingsPanel = document.getElementById(
   "appearanceSettingsPanel"
 );
+const editorSettingsPanel = document.getElementById("editorSettingsPanel");
 const accountSettingsPanel = document.getElementById("accountSettingsPanel");
 const googleAccountValue = document.getElementById("googleAccountValue");
 const switchAccountButton = document.getElementById("switchAccountButton");
@@ -274,6 +277,9 @@ const uiFontSelect = document.getElementById("uiFontSelect");
 const uiFontSizeSelect = document.getElementById("uiFontSizeSelect");
 const editorFontSelect = document.getElementById("editorFontSelect");
 const editorFontSizeSelect = document.getElementById("editorFontSizeSelect");
+const rulerForm = document.getElementById("rulerForm");
+const rulerInput = document.getElementById("rulerInput");
+const rulerList = document.getElementById("rulerList");
 const textEncoder = new TextEncoder();
 const emergencyDraftStorageKey = `${EMERGENCY_DRAFT_STORAGE_PREFIX}${crypto.randomUUID()}`;
 const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
@@ -336,13 +342,25 @@ function updateAccountPanel() {
 }
 
 function selectSettingsSection(section) {
-  const appearanceSelected = section === "appearance";
-  appearanceSectionButton.classList.toggle("selected", appearanceSelected);
-  accountSectionButton.classList.toggle("selected", !appearanceSelected);
-  appearanceSectionButton.toggleAttribute("aria-current", appearanceSelected);
-  accountSectionButton.toggleAttribute("aria-current", !appearanceSelected);
-  appearanceSettingsPanel.hidden = !appearanceSelected;
-  accountSettingsPanel.hidden = appearanceSelected;
+  for (const [name, button, panel] of [
+    ["appearance", appearanceSectionButton, appearanceSettingsPanel],
+    ["editor", editorSectionButton, editorSettingsPanel],
+    ["account", accountSectionButton, accountSettingsPanel],
+  ]) {
+    const selected = name === section;
+    button.classList.toggle("selected", selected);
+    button.toggleAttribute("aria-current", selected);
+    panel.hidden = !selected;
+  }
+}
+
+function normalizeRulers(values) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  return [...new Set(values.map(Number).filter(
+    (value) => Number.isSafeInteger(value) && value > 0
+  ))].sort((first, second) => first - second);
 }
 
 function loadThemePreferences() {
@@ -374,6 +392,7 @@ function loadThemePreferences() {
       )
         ? Number(stored.editorFontSize)
         : DEFAULT_THEME_PREFERENCES.editorFontSize,
+      rulers: normalizeRulers(stored?.rulers),
     };
   } catch {
     return { ...DEFAULT_THEME_PREFERENCES };
@@ -449,6 +468,7 @@ function applyTheme() {
       "editor.inactiveSelectionBackground": theme.panel,
       "editor.lineHighlightBackground": theme.panel,
       "editorWhitespace.foreground": theme.dim,
+      "editorRuler.foreground": theme.dim,
       "editorIndentGuide.background1": theme.panel,
       "editorIndentGuide.activeBackground1": theme.dim,
       "editorWidget.background": theme.panel,
@@ -485,7 +505,31 @@ function applyFontPreferences() {
     editor.updateOptions({
       fontFamily: editorFont.stack,
       fontSize: themePreferences.editorFontSize,
+      rulers: themePreferences.rulers,
     });
+  }
+}
+
+function renderRulerList() {
+  rulerList.replaceChildren();
+  for (const ruler of themePreferences.rulers) {
+    const item = document.createElement("div");
+    item.className = "ruler-item";
+    const column = document.createElement("span");
+    column.className = "ruler-column";
+    column.textContent = `COLUMN ${ruler}`;
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.textContent = "DELETE";
+    deleteButton.setAttribute("aria-label", `Delete ruler ${ruler}`);
+    deleteButton.addEventListener("click", () => {
+      themePreferences.rulers = themePreferences.rulers.filter(
+        (candidate) => candidate !== ruler
+      );
+      saveThemePreferences();
+    });
+    item.append(column, deleteButton);
+    rulerList.append(item);
   }
 }
 
@@ -499,6 +543,7 @@ function updateThemeControls() {
   uiFontSizeSelect.value = String(themePreferences.uiFontSize);
   editorFontSelect.value = themePreferences.editorFont;
   editorFontSizeSelect.value = String(themePreferences.editorFontSize);
+  renderRulerList();
   darkThemeSelect.disabled =
     !themePreferences.followSystem && themePreferences.mode !== "dark";
   lightThemeSelect.disabled =
@@ -535,6 +580,9 @@ settingsButton.addEventListener("click", () => {
 closeSettingsButton.addEventListener("click", () => settingsDialog.close());
 appearanceSectionButton.addEventListener("click", () =>
   selectSettingsSection("appearance")
+);
+editorSectionButton.addEventListener("click", () =>
+  selectSettingsSection("editor")
 );
 accountSectionButton.addEventListener("click", () =>
   selectSettingsSection("account")
@@ -579,6 +627,26 @@ editorFontSizeSelect.addEventListener("change", () => {
   themePreferences.editorFontSize = Number(editorFontSizeSelect.value);
   saveThemePreferences();
 });
+
+rulerForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const ruler = Number(rulerInput.value);
+  if (!Number.isSafeInteger(ruler) || ruler <= 0) {
+    rulerInput.setCustomValidity("Enter a positive whole-number column.");
+    rulerInput.reportValidity();
+    return;
+  }
+  rulerInput.setCustomValidity("");
+  themePreferences.rulers = normalizeRulers([
+    ...themePreferences.rulers,
+    ruler,
+  ]);
+  rulerInput.value = "";
+  saveThemePreferences();
+  rulerInput.focus();
+});
+
+rulerInput.addEventListener("input", () => rulerInput.setCustomValidity(""));
 
 systemTheme.addEventListener("change", () => {
   if (themePreferences.followSystem) {
@@ -2431,6 +2499,7 @@ require(["vs/editor/editor.main"], () => {
     wordWrap: "on",
     fontFamily: getFont(themePreferences.editorFont).stack,
     fontSize: themePreferences.editorFontSize,
+    rulers: themePreferences.rulers,
     lineNumbersMinChars: 3,
     padding: { top: 8 },
     readOnly: true,

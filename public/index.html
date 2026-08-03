@@ -81,6 +81,9 @@
         <button id="appearanceSectionButton" type="button" class="settings-section selected" aria-current="page" aria-controls="appearanceSettingsPanel">
           APPEARANCE
         </button>
+        <button id="editorSectionButton" type="button" class="settings-section" aria-controls="editorSettingsPanel">
+          EDITOR
+        </button>
         <button id="accountSectionButton" type="button" class="settings-section" aria-controls="accountSettingsPanel">
           ACCOUNT
         </button>
@@ -113,16 +116,6 @@
         </div>
 
         <div class="setting-row stacked">
-          <label class="setting-label" for="editorFontSelect">EDITOR FONT</label>
-          <select id="editorFontSelect"></select>
-        </div>
-
-        <div class="setting-row stacked">
-          <label class="setting-label" for="editorFontSizeSelect">EDITOR FONT SIZE</label>
-          <select id="editorFontSizeSelect"></select>
-        </div>
-
-        <div class="setting-row stacked">
           <label class="setting-label" for="darkThemeSelect">DARK THEME</label>
           <select id="darkThemeSelect"></select>
         </div>
@@ -130,6 +123,25 @@
         <div class="setting-row stacked">
           <label class="setting-label" for="lightThemeSelect">LIGHT THEME</label>
           <select id="lightThemeSelect"></select>
+        </div>
+      </section>
+      <section id="editorSettingsPanel" class="settings-panel" aria-labelledby="editorSettingsTitle" hidden>
+        <h3 id="editorSettingsTitle">EDITOR</h3>
+        <div class="setting-row stacked">
+          <label class="setting-label" for="editorFontSelect">EDITOR FONT</label>
+          <select id="editorFontSelect"></select>
+        </div>
+        <div class="setting-row stacked">
+          <label class="setting-label" for="editorFontSizeSelect">EDITOR FONT SIZE</label>
+          <select id="editorFontSizeSelect"></select>
+        </div>
+        <div class="setting-row stacked">
+          <span class="setting-label">RULERS</span>
+          <form id="rulerForm" class="ruler-form">
+            <input id="rulerInput" type="number" min="1" step="1" inputmode="numeric" aria-label="Ruler column">
+            <button type="submit">ADD</button>
+          </form>
+          <div id="rulerList" class="ruler-list"></div>
         </div>
       </section>
       <section id="accountSettingsPanel" class="settings-panel" aria-labelledby="accountTitle" hidden>

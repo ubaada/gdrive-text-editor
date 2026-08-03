@@ -95,6 +95,9 @@ operations are communicated through transient footer statuses.
   unknown extensions use plain text.
 - Naming a new file updates the tab name and Monaco language mode.
 - `Ctrl/Cmd+S` invokes exactly the same guarded save flow as the Save button.
+- Editor rulers are global across working buffers and revision previews. Each
+  configured positive whole-number column appears once and rulers are ordered by
+  column.
 
 ## Supported Files And Encoding
 
@@ -276,7 +279,7 @@ Drive may reject downloading an older unretained revision. The application must:
 
 ## Settings
 
-`[G] SETTINGS` opens a dialog with Appearance and Account sections.
+`[G] SETTINGS` opens a dialog with Appearance, Editor, and Account sections.
 
 Appearance contains:
 
@@ -287,6 +290,15 @@ Appearance contains:
 - Dark-theme selection.
 - Light-theme selection.
 
+Editor contains:
+
+- Editor font and size.
+- A numeric ruler-column input and `ADD` action.
+- A sorted list of configured rulers with a `DELETE` action for each ruler.
+
+Rulers accept positive whole-number columns, ignore duplicates, apply
+immediately, and survive reload.
+
 Account shows the connected or remembered Google email and provides the account
 switch action described under Google Authorization.
 
@@ -295,7 +307,8 @@ light, GT America Mono for both UI and editor, and 14 px font sizes.
 
 Available font choices are GT America Mono, System Mono, Courier New, Consolas,
 and Monaco. UI sizes are 10, 11, 12, 13, 14, 15, 16, and 18 px. Editor sizes
-also include 20, 22, 24, and 28 px.
+also include 20, 22, 24, and 28 px. UI font controls remain in Appearance;
+editor font controls are in Editor.
 
 Changes apply immediately and survive reload. Invalid stored values fall back to
 defaults. GT America Mono uses system monospace fallbacks when unavailable.
