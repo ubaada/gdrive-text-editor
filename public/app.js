@@ -180,6 +180,7 @@ let nextTabId = 1;
 let nextUntitledNumber = 1;
 let draftDatabasePromise = null;
 const openingDriveFileIds = new Set();
+const trashingExplorerItemIds = new Set();
 let loadingFrameIndex = 0;
 let loadingAnimationTimer = null;
 let explorerCreateOperation = null;
@@ -831,13 +832,20 @@ function finishConfirmation(accepted) {
   resolve(accepted);
 }
 
-function confirmAction({ title, message, acceptLabel = "YES" }) {
+function confirmAction({
+  title,
+  message,
+  acceptLabel = "YES",
+  cancelLabel = "NO",
+}) {
   if (confirmationResolver) {
     return Promise.resolve(false);
   }
   confirmationTitle.textContent = title;
   confirmationMessage.textContent = message;
   acceptConfirmationButton.textContent = acceptLabel;
+  cancelConfirmationButton.textContent = cancelLabel || "NO";
+  cancelConfirmationButton.hidden = !cancelLabel;
   confirmationDialog.showModal();
   return new Promise((resolve) => {
     confirmationResolver = resolve;
@@ -1971,6 +1979,116 @@ function isExplorerFileSupported(file) {
   );
 }
 
+function showNotice(title, message) {
+  return confirmAction({
+    title,
+    message,
+    acceptLabel: "OK",
+    cancelLabel: null,
+  });
+}
+
+async function driveFolderHasChildren(folderId) {
+  const parameters = new URLSearchParams({
+    q: `'${folderId}' in parents and trashed = false`,
+    pageSize: "1",
+    fields: "files(id)",
+    includeItemsFromAllDrives: "true",
+    supportsAllDrives: "true",
+  });
+  const response = await driveFetch(
+    `https://www.googleapis.com/drive/v3/files?${parameters}`
+  );
+  const page = await response.json();
+  return Boolean(page.files?.length);
+}
+
+async function trashExplorerItem(item) {
+  if (trashingExplorerItemIds.has(item.id)) {
+    return;
+  }
+  const isFolder = item.mimeType === FOLDER_MIME_TYPE;
+  const openTab = tabs.find((tab) => tab.file?.id === item.id);
+  if (
+    openTab?.dirty ||
+    openTab?.saving ||
+    openTab?.savePending ||
+    openTab?.loading ||
+    openTab?.restoring
+  ) {
+    await showNotice(
+      "FILE IN USE",
+      "SAVE OR DISCARD PENDING FILE CHANGES BEFORE MOVING IT TO TRASH."
+    );
+    return;
+  }
+  if (
+    isFolder &&
+    explorerCreateOperation &&
+    findExplorerFolder(explorerCreateOperation.parentId, item)
+  ) {
+    await showNotice(
+      "FOLDER IN USE",
+      "FINISH OR CANCEL THE CURRENT CREATE OPERATION BEFORE MOVING THIS FOLDER TO TRASH."
+    );
+    return;
+  }
+
+  const accepted = await confirmAction({
+    title: "MOVE TO TRASH",
+    message: `MOVE ${item.name} TO DRIVE TRASH?`,
+    acceptLabel: "MOVE TO TRASH",
+  });
+  if (!accepted) {
+    return;
+  }
+
+  trashingExplorerItemIds.add(item.id);
+  renderExplorerTree();
+  try {
+    if (isFolder && (await driveFolderHasChildren(item.id))) {
+      await showNotice(
+        "FOLDER NOT EMPTY",
+        "FOR SECURITY, DELETING NON-EMPTY FOLDERS IS NOT SUPPORTED. CLEAR OUT ITS CONTENTS FIRST."
+      );
+      setStatus("FOLDER NOT EMPTY");
+      return;
+    }
+    await driveFetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        item.id
+      )}?supportsAllDrives=true&fields=id,trashed`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trashed: true }),
+      }
+    );
+
+    const parentId = item.parents?.[0] || EXPLORER_ROOT_ID;
+    const parent = findExplorerFolder(parentId) || explorerRoot;
+    parent.children = parent.children.filter((child) => child.id !== item.id);
+    if (selectedExplorerFolderId === item.id) {
+      selectedExplorerFolderId = parent.id;
+    }
+    userExpandedFolderIds.delete(item.id);
+    revealedFolderIds.delete(item.id);
+    if (openTab && tabs.includes(openTab)) {
+      closeTab(openTab.id);
+    }
+    renderExplorerTree();
+    saveWorkspace();
+    await loadExplorerFolder(parent, true);
+    setStatus(isFolder ? "FOLDER MOVED TO TRASH" : "FILE MOVED TO TRASH");
+  } catch (error) {
+    console.error(error);
+    setStatus(`TRASH FAILED: ${error.message}`);
+  } finally {
+    trashingExplorerItemIds.delete(item.id);
+    renderExplorerTree();
+  }
+}
+
 function escapeDriveSearchValue(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
@@ -2263,6 +2381,9 @@ function closeSearch(restoreFocus = true) {
 
 function createExplorerRow(item, depth) {
   const isFolder = item.mimeType === FOLDER_MIME_TYPE;
+  const container = document.createElement("div");
+  container.className = "explorer-item";
+  container.setAttribute("role", "presentation");
   const row = document.createElement("button");
   row.type = "button";
   row.className = "explorer-row";
@@ -2307,7 +2428,19 @@ function createExplorerRow(item, depth) {
     }
   }
 
-  return row;
+  container.append(row);
+  if (item.id !== EXPLORER_ROOT_ID) {
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "explorer-delete";
+    deleteButton.textContent = "DEL";
+    deleteButton.title = `Move ${item.name} to trash`;
+    deleteButton.setAttribute("aria-label", `Move ${item.name} to trash`);
+    deleteButton.disabled = trashingExplorerItemIds.has(item.id);
+    deleteButton.addEventListener("click", () => trashExplorerItem(item));
+    container.append(deleteButton);
+  }
+  return container;
 }
 
 function appendExplorerFolder(folder, depth) {
@@ -3218,6 +3351,7 @@ function switchGoogleAccount() {
   }
   if (
     explorerCreateOperation ||
+    trashingExplorerItemIds.size ||
     tabs.some(
       (tab) => tab.file && (tab.saving || tab.savePending || tab.loading || tab.restoring)
     )

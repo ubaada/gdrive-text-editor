@@ -49,6 +49,8 @@ async function installDriveApi(page) {
   const postUploadVersionDrifts = new Set();
   const restrictedRevisionDownloads = new Set();
   const uploadFailures = new Set();
+  const trashDelays = new Map();
+  const trashFailures = new Set();
   let account = {
     emailAddress: "test@example.com",
     permissionId: "account-1",
@@ -225,6 +227,7 @@ async function installDriveApi(page) {
           ? unescapeDriveQueryValue(nameTerm).toLocaleLowerCase()
           : null;
         const matches = [...files.values()]
+          .filter((file) => !file.trashed)
           .filter((file) => {
             const corpus = url.searchParams.get("corpora") || "user";
             return corpus === "drive"
@@ -267,7 +270,7 @@ async function installDriveApi(page) {
         return route.fulfill({ status: 500, body: "Folder list failed" });
       }
       const children = [...files.values()]
-        .filter((file) => file.parents?.includes(parentId))
+        .filter((file) => !file.trashed && file.parents?.includes(parentId))
         .map(publicFile);
       const configuredDelay = folderDelays.get(parentId);
       const milliseconds = Array.isArray(configuredDelay)
@@ -335,6 +338,22 @@ async function installDriveApi(page) {
       return route.fulfill({ json: response });
     }
 
+    if (request.method() === "PATCH" && id) {
+      await delay(trashDelays.get(id) || 0);
+      if (trashFailures.delete(id)) {
+        return route.fulfill({ status: 500, body: "Trash failed" });
+      }
+      const file = files.get(id);
+      if (!file) {
+        return route.fulfill({ status: 404, body: "Not found" });
+      }
+      const metadata = request.postDataJSON();
+      if (metadata.trashed === true) {
+        file.trashed = true;
+      }
+      return route.fulfill({ json: publicFile(file) });
+    }
+
     return route.fulfill({ status: 405, body: "Unhandled Drive mock request" });
   });
 
@@ -355,6 +374,8 @@ async function installDriveApi(page) {
     setPostUploadVersionDrift: (id) => postUploadVersionDrifts.add(id),
     restrictRevisionDownloads: (id) => restrictedRevisionDownloads.add(id),
     failNextUpload: (id) => uploadFailures.add(id),
+    failNextTrash: (id) => trashFailures.add(id),
+    setTrashDelay: (id, milliseconds) => trashDelays.set(id, milliseconds),
     failNextFolderList: (id) => folderListFailures.add(id),
     failNextSearch: () => {
       failNextSearch = true;

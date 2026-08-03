@@ -202,6 +202,18 @@ operations are communicated through transient footer statuses.
 - Ancestors expanded only for active-file reveal are derived state and are not
   saved as explicit user expansion. The user may collapse such an ancestor; it
   is revealed again when the tab is reactivated or the account reconnects.
+- File and folder rows expose a right-aligned `DEL` control on hover or keyboard
+  focus; touch-sized layouts keep it visible. My Drive itself cannot be deleted.
+- `DEL` always asks for confirmation and moves an item to Drive trash rather
+  than permanently deleting it.
+- A clean open file closes after it is moved to trash. A dirty, loading, saving,
+  or restoring file cannot be trashed until its pending work is resolved.
+- A folder is moved to trash only when a final Drive query reports no
+  non-trashed children. A non-empty folder remains untouched and reports:
+  `FOR SECURITY, DELETING NON-EMPTY FOLDERS IS NOT SUPPORTED. CLEAR OUT ITS
+  CONTENTS FIRST.`
+- Account switching waits for an active trash operation, and a failed trash
+  request leaves the explorer item and local work intact.
 
 ### Inline Creation
 

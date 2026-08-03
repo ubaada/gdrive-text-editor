@@ -334,6 +334,10 @@ body.explorer-collapsed #fileExplorer {
   background: var(--background);
 }
 
+.explorer-item {
+  position: relative;
+}
+
 .explorer-row {
   display: flex;
   width: 100%;
@@ -342,11 +346,41 @@ body.explorer-collapsed #fileExplorer {
   overflow: hidden;
   border: 0;
   border-bottom: 1px solid var(--dim);
+  padding-right: 48px;
   background: var(--background);
   color: var(--ink);
   font-weight: 400;
   text-align: left;
   white-space: nowrap;
+}
+
+.explorer-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 1px;
+  width: 43px;
+  min-height: 0;
+  padding: 0;
+  border-right: 0;
+  border-left: 1px solid var(--dim);
+  opacity: 0;
+  pointer-events: none;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: var(--ui-small-font-size);
+}
+
+.explorer-item:hover .explorer-delete,
+.explorer-item:focus-within .explorer-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.explorer-delete:hover,
+.explorer-delete:focus-visible {
+  background: var(--ink);
+  color: var(--background);
 }
 
 .explorer-row:hover,
@@ -1045,6 +1079,11 @@ select:disabled {
 
   .search-results {
     max-height: calc(100vh - 142px);
+  }
+
+  .explorer-delete {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .tab {
