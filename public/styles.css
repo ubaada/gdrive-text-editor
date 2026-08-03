@@ -54,10 +54,10 @@ header {
 .search-panel {
   position: fixed;
   z-index: 20;
-  top: 54px;
+  top: 25vh;
   left: 50%;
   width: min(680px, calc(100vw - 24px));
-  max-height: min(520px, calc(100vh - 78px));
+  max-height: min(520px, calc(75vh - 16px));
   overflow: hidden;
   border: 1px solid var(--ink);
   box-shadow: 5px 5px 0 var(--dim);
@@ -1060,9 +1060,9 @@ select:disabled {
   }
 
   .search-panel {
-    top: 48px;
+    top: 25vh;
     width: calc(100vw - 16px);
-    max-height: calc(100vh - 64px);
+    max-height: calc(75vh - 16px);
   }
 
   .search-shortcut {
