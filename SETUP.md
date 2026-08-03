@@ -26,7 +26,6 @@ export REGION="YOUR_GCP_REGION"
 export SERVICE_NAME="drive-text-editor"
 export ARTIFACT_REPOSITORY="drive-text-editor"
 export IMAGE_NAME="drive-text-editor"
-export RUNTIME_NAME="drive-text-editor-runtime"
 
 gcloud auth login
 gcloud config set project "$PROJECT_ID"
@@ -43,6 +42,7 @@ the required APIs:
 ```bash
 gcloud services enable \
   drive.googleapis.com \
+  compute.googleapis.com \
   run.googleapis.com \
   artifactregistry.googleapis.com \
   iam.googleapis.com \
@@ -121,19 +121,23 @@ Configure Docker authentication:
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 ```
 
-## Create The Runtime Identity
+## Confirm The Runtime Identity
 
-The static nginx container does not need permission to call Google Cloud APIs.
-Create a dedicated service account without project roles:
+The current deployment uses the project's default Compute Engine service
+account as its Cloud Run runtime identity. Enabling the Compute Engine API above
+creates this account in a new project.
 
 ```bash
-gcloud iam service-accounts create "$RUNTIME_NAME" \
-  --display-name="Drive Text Editor runtime"
+export PROJECT_NUMBER="$(
+  gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)"
+)"
+export RUNTIME_SERVICE_ACCOUNT="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
-export RUNTIME_SERVICE_ACCOUNT="${RUNTIME_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+gcloud iam service-accounts describe "$RUNTIME_SERVICE_ACCOUNT" \
+  --project="$PROJECT_ID"
 ```
 
-Skip the create command if the account already exists.
+The deployment commands below leave this existing runtime identity unchanged.
 
 ## Build And Deploy
 
@@ -159,7 +163,6 @@ gcloud run deploy "$SERVICE_NAME" \
   --project="$PROJECT_ID" \
   --region="$REGION" \
   --image="$IMAGE_URI" \
-  --service-account="$RUNTIME_SERVICE_ACCOUNT" \
   --no-allow-unauthenticated \
   --min-instances=0 \
   --max-instances=1 \
@@ -317,14 +320,6 @@ Numeric IDs are used for deployment trust because repository and owner names
 can be renamed or reused. Deployment credentials are also restricted to the
 `main` branch.
 
-Get the Google Cloud project number:
-
-```bash
-export PROJECT_NUMBER="$(
-  gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)"
-)"
-```
-
 ### Deployment service account
 
 Create the GitHub deployment identity:
@@ -357,8 +352,9 @@ gcloud iam service-accounts add-iam-policy-binding \
   --role="roles/iam.serviceAccountUser"
 ```
 
-The final binding permits the deployer to attach the runtime identity to a
-revision; it does not grant the runtime identity's permissions to the deployer.
+The final binding permits the deployer to create revisions that retain the
+existing default runtime identity. It does not grant that identity's permissions
+to the deployer.
 
 ### Workload Identity Federation
 
@@ -432,7 +428,6 @@ REGION
 REPOSITORY
 SERVICE
 IMAGE
-RUNTIME_SERVICE_ACCOUNT
 ```
 
 The workflow already:
@@ -440,7 +435,8 @@ The workflow already:
 1. Passes `GOOGLE_CLIENT_ID` to the supplied Dockerfile as a build argument.
 2. Authenticates through Workload Identity Federation.
 3. Builds and pushes the supplied Docker image.
-4. Deploys a private Cloud Run revision with the dedicated runtime identity.
+4. Deploys a private Cloud Run revision without replacing the service's runtime
+   identity.
 
 It runs on pushes to `main` and through manual `workflow_dispatch` runs of the
 `main` branch.
@@ -486,7 +482,7 @@ interactive browser sign-in.
 
 - Cloud Run serves static files and does not receive Drive tokens or contents.
 - Browser OAuth access tokens remain in browser memory.
-- The runtime service account has no project roles.
+- Deployments retain the existing Cloud Run runtime identity.
 - GitHub Actions uses short-lived OIDC credentials instead of a service-account
   key.
 - IAP and Drive OAuth independently restrict access.

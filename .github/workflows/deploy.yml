@@ -19,7 +19,6 @@ env:
   REPOSITORY: drive-text-editor
   SERVICE: drive-text-editor
   IMAGE: drive-text-editor
-  RUNTIME_SERVICE_ACCOUNT: drive-text-editor-runtime@personal-gcp-project1.iam.gserviceaccount.com
 
 jobs:
   deploy:
@@ -63,7 +62,6 @@ jobs:
           image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ github.sha }}
           flags: >-
             --no-allow-unauthenticated
-            --service-account=${{ env.RUNTIME_SERVICE_ACCOUNT }}
             --min-instances=0
             --max-instances=1
             --cpu=1
